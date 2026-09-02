@@ -356,3 +356,73 @@ def export(seed: int = 0, calib_batches: int = 64):
     volume.commit()
     print(json.dumps(save_meta, indent=2), flush=True)
     return save_meta
+
+
+@app.function(image=gpu_image, volumes={DATA_ROOT: volume}, timeout=2 * 3600,
+              gpu="T4", cpu=4)
+def eval_heldout(seed: int = 0):
+    """Phase-07 step 7.3: strictly causal eval on the 5 held-out categories,
+    for the unpruned teacher AND the distilled 2.1k student (FP32 + INT8).
+
+    Gates: DNS pure-noise FPR < 5% (spec exit criterion).
+
+    uv run modal run modal_app.py::eval_heldout --seed 0
+    """
+    import numpy as np
+    import torch
+
+    from pulsevad.eval import evaluate_window_set, report_table
+    from pulsevad.prune import build_student
+    from pulsevad.quantize import (Int8PulseVAD, fake_quant_weights,
+                                   fold_batchnorm, weight_scales)
+
+    volume.reload()
+    cache = Path(DATA_ROOT) / "cache"
+    cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
+    sets = {}
+    for c in cats:
+        fp = cache / "eval_sets" / f"eval_{c}_features.npy"
+        if not fp.exists():
+            fp = cache / f"eval_{c}_features.npy"
+        sets[c] = (np.load(fp), np.load(str(fp).replace("features", "labels")))
+        print(f"[eval:{c}] {sets[c][0].shape}", flush=True)
+
+    # unpruned teacher (reference row of the comparison table)
+    tck = torch.load(Path(DATA_ROOT) / "runs" / f"seed_{seed}" / "best_model.pth",
+                     map_location="cpu", weights_only=False)
+    teacher = PulseVAD()
+    teacher.load_state_dict(tck["model"])
+
+    # distilled student, FP32 folded + INT8
+    ck = torch.load(Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}" / "pruned_model_2.1k.pth",
+                    map_location="cpu", weights_only=False)
+    student = build_student()
+    student.load_state_dict(ck["model"])
+    folded = fold_batchnorm(student)
+    int8_model = Int8PulseVAD(folded.dims)
+    int8_model.load_state_dict(folded.state_dict())
+    train_ds = CachedWindows(cache / "train_features.npy", cache / "train_labels.npy")
+    loader = DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=2)
+    int8_model.calibrate([x for _, (x, _) in zip(range(64), loader)])
+    fake_quant_weights(int8_model, weight_scales(int8_model))
+
+    models = {
+        "teacher_81k": teacher,
+        "student_2.1k_fp32": folded,
+        "student_2.1k_int8": int8_model,
+    }
+    report = {}
+    for name, model in models.items():
+        report[name] = {c: evaluate_window_set(model, *sets[c]) for c in cats}
+        print(f"[eval:{name}] " + json.dumps(report[name]), flush=True)
+
+    fpr_noise = report["student_2.1k_fp32"]["pure_noise"]["fpr_at_tpr95"]
+    assert fpr_noise < 0.05, f"pure-noise FPR {fpr_noise} violates the 5% gate"
+
+    text = report_table(report)
+    print(text, flush=True)
+    out = Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}" / "heldout_report.json"
+    out.write_text(json.dumps({"per_model": report, "table_md": text}, indent=2))
+    volume.commit()
+    print(json.dumps(report["student_2.1k_fp32"], indent=2), flush=True)
+    return report
