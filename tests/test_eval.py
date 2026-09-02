@@ -88,3 +88,14 @@ def test_comparison_artifact():
     assert "Summary wins" in md and data["wins"]
     # measured AUC table lists both models with 5 categories
     assert md.count("**PulseVAD (ship, pruned)**") >= 2
+
+
+def test_single_class_pure_noise_metrics():
+    # pure_noise: all-zero labels -> AUC undefined, gate is FPR at 0.5
+    y = np.zeros(100, dtype=int)
+    p = np.concatenate([np.full(5, 0.9), np.full(95, 0.1)])
+    m = causal_metrics(y, p)
+    assert m["auc"] is None and m["f1"] is None
+    assert m["fpr_at_tpr95"] == 0.05
+    p = np.full(100, 0.9)
+    assert causal_metrics(y, p)["fpr_at_tpr95"] == 1.0

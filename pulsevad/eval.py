@@ -20,9 +20,21 @@ THRESHOLDS = np.linspace(0.0, 1.0, 201)  # spec 7.1 step 5: 0.0..1.0 sweep
 
 
 def causal_metrics(y_true: np.ndarray, probs: np.ndarray) -> dict:
-    """AUC, best-F1 (+ its threshold), and FPR @ TPR=0.95."""
+    """AUC, best-F1 (+ its threshold), and FPR @ TPR=0.95.
+
+    Single-class sets (e.g. pure_noise: all-zero labels by construction) have
+    undefined AUC/F1; the spec's gate for them is the false-positive rate at
+    the default 0.5 operating point, reported as fpr_at_tpr95.
+    """
     y_true = np.asarray(y_true).astype(int)
     probs = np.asarray(probs, dtype=np.float64)
+    if np.unique(y_true).size < 2:
+        return {
+            "n": int(len(y_true)),
+            "auc": None, "f1": None, "f1_threshold": None,
+            "fpr_at_tpr95": round(float((probs >= 0.5).mean()), 4),
+            "speech_prob_mean": round(float(probs.mean()), 4),
+        }
     auc = float(roc_auc_score(y_true, probs))
 
     pred = probs[:, None] >= THRESHOLDS[None, :]

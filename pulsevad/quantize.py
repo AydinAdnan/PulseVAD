@@ -59,7 +59,7 @@ class FoldedPulseVAD(nn.Module):
         self.conv5 = nn.Conv1d(d["p4"], d["c5"], 1, bias=True)
         self.classifier = nn.Linear(d["c5"], 2, bias=True)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_logits: bool = True) -> torch.Tensor:
         x = F.relu(self.adapter(x))
         x = self.conv0_dw(x)
         x = F.relu(self.conv0_pw(x))
@@ -72,7 +72,10 @@ class FoldedPulseVAD(nn.Module):
         x = F.relu(self.conv4_pw(x))
         x = F.relu(self.conv5(x))
         x = x.mean(dim=-1)  # global average pool == AdaptiveAvgPool1d(1) squeeze
-        return self.classifier(x)
+        logits = self.classifier(x)
+        if return_logits:
+            return logits
+        return torch.softmax(logits, dim=-1)[:, 1]
 
 
 _BN_FOLD_PAIRS = [
@@ -167,7 +170,7 @@ class Int8PulseVAD(FoldedPulseVAD):
         self._record = None
         return scales
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_logits: bool = True) -> torch.Tensor:
         def q(t: torch.Tensor, name: str) -> torch.Tensor:
             if self._record is not None:
                 prev = self._record.get(name)
@@ -194,7 +197,10 @@ class Int8PulseVAD(FoldedPulseVAD):
         a = q(F.relu(self.conv4_pw(a)), "conv4_pw")
         a = q(F.relu(self.conv5(a)), "conv5")
         a = q(a.mean(dim=-1), "gap")
-        return self.classifier(a)
+        logits = self.classifier(a)
+        if return_logits:
+            return logits
+        return torch.softmax(logits, dim=-1)[:, 1]
 
 
 def save_int8(model: Int8PulseVAD, path: Path, meta: dict) -> None:
