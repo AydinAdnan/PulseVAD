@@ -35,22 +35,29 @@ class FoldedPulseVAD(nn.Module):
     plain Conv/Relu/Mean/Gemm ops (TFLM-compatible, no folding at runtime).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dims: dict | None = None) -> None:
+        """dims: layer widths; defaults are the unpruned 81k model."""
         super().__init__()
-        self.adapter = nn.Conv1d(64, 128, 1, bias=True)
-        self.conv0_dw = nn.Conv1d(128, 128, 11, padding=5, groups=128, bias=False)
-        self.conv0_pw = nn.Conv1d(128, 128, 1, bias=True)
-        self.block1 = nn.Conv1d(128, 64, 1, bias=True)
-        self.block2 = nn.Conv1d(64, 64, 1, bias=True)
-        self.subA_dw = nn.Conv1d(64, 64, 17, padding=8, groups=64, bias=False)
-        self.subA_pw = nn.Conv1d(64, 64, 1, bias=True)
-        self.subC_dw = nn.Conv1d(64, 64, 17, padding=8, groups=64, bias=False)
-        self.subC_pw = nn.Conv1d(64, 64, 1, bias=True)
-        self.skip = nn.Conv1d(64, 64, 1, bias=True)
-        self.conv4_dw = nn.Conv1d(64, 64, 29, dilation=2, padding=28, groups=64, bias=False)
-        self.conv4_pw = nn.Conv1d(64, 128, 1, bias=True)
-        self.conv5 = nn.Conv1d(128, 128, 1, bias=True)
-        self.classifier = nn.Linear(128, 2, bias=True)
+        d = {"adapter": 128, "conv0_pw": 128, "b1": 64, "b2": 64, "b3": 64,
+             "c4": 64, "p4": 128, "c5": 128} | (dims or {})
+        self.adapter = nn.Conv1d(64, d["adapter"], 1, bias=True)
+        self.conv0_dw = nn.Conv1d(d["adapter"], d["adapter"], 11, padding=5,
+                                  groups=d["adapter"], bias=False)
+        self.conv0_pw = nn.Conv1d(d["adapter"], d["conv0_pw"], 1, bias=True)
+        self.block1 = nn.Conv1d(d["conv0_pw"], d["b1"], 1, bias=True)
+        self.block2 = nn.Conv1d(d["b1"], d["b2"], 1, bias=True)
+        self.subA_dw = nn.Conv1d(d["b2"], d["b3"], 17, padding=8,
+                                 groups=d["b2"], bias=False)
+        self.subA_pw = nn.Conv1d(d["b3"], d["b3"], 1, bias=True)
+        self.subC_dw = nn.Conv1d(d["b3"], d["b3"], 17, padding=8,
+                                 groups=d["b3"], bias=False)
+        self.subC_pw = nn.Conv1d(d["b3"], d["b3"], 1, bias=True)
+        self.skip = nn.Conv1d(d["b2"], d["b3"], 1, bias=True)
+        self.conv4_dw = nn.Conv1d(d["b3"], d["c4"], 29, dilation=2, padding=28,
+                                  groups=d["b3"], bias=False)
+        self.conv4_pw = nn.Conv1d(d["c4"], d["p4"], 1, bias=True)
+        self.conv5 = nn.Conv1d(d["p4"], d["c5"], 1, bias=True)
+        self.classifier = nn.Linear(d["c5"], 2, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.relu(self.adapter(x))
@@ -77,8 +84,22 @@ _BN_FOLD_PAIRS = [
 
 
 def fold_batchnorm(model) -> FoldedPulseVAD:
-    """W' = W * gamma/sqrt(var+eps), b' = beta - mu * gamma/sqrt(var+eps)."""
-    folded = FoldedPulseVAD().eval()
+    """W' = W * gamma/sqrt(var+eps), b' = beta - mu * gamma/sqrt(var+eps).
+
+    Works on any width (unpruned 81k or pruned 2.1k student); the folded
+    model's dims are read from the source model's modules.
+    """
+    dims = {
+        "adapter": model.adapter.conv.out_channels,
+        "conv0_pw": model.conv0_pw.conv.out_channels,
+        "b1": model.block1.conv.out_channels,
+        "b2": model.block2.conv.out_channels,
+        "b3": model.block3.subA_dw.out_channels,
+        "c4": model.conv4_dw.out_channels,
+        "p4": model.conv4_pw.conv.out_channels,
+        "c5": model.conv5.conv.out_channels,
+    }
+    folded = FoldedPulseVAD(dims).eval()
     with torch.no_grad():
         for dst, src in _BN_FOLD_PAIRS:
             cbn = model.get_submodule(src)
