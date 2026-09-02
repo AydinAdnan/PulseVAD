@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+data/raw/*
+data/labels/*
+data/cache/*
+*.pth
+*.onnx
+*.tflite
+.venv/
+dist/
+build/
+.pytest_cache/
+!data/raw/.gitkeep
+!data/labels/.gitkeep
+!data/cache/.gitkeep
