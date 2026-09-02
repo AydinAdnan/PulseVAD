@@ -13,3 +13,4 @@ build/
 !data/raw/.gitkeep
 !data/labels/.gitkeep
 !data/cache/.gitkeep
+.agents/
