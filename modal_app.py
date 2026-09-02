@@ -273,8 +273,9 @@ def export(seed: int = 0, calib_batches: int = 64):
     import torch
     from torch.utils.data import DataLoader
 
-    from pulsevad.export_onnx import (export_onnx, quantize_onnx_int8,
-                                      session_logits, verify_parity)
+    from pulsevad.export_onnx import (export_onnx, onnx_session,
+                                      quantize_onnx_int8, session_logits,
+                                      verify_parity)
     from pulsevad.prune import build_student
     from pulsevad.quantize import (Int8PulseVAD, fake_quant_weights,
                                    fold_batchnorm, weight_scales,
