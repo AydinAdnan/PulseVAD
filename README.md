@@ -116,8 +116,8 @@ uv run modal volume get pulsevad-data runs ./runs/
 - [x] Phase 2 — model architecture, exact 81,090 params (7 tests)
 - [x] Phase 3 — dataset ingestion, Silero self-labeling, feature cache (12 tests)
 - [x] Phase 4 — base training engine + cyclic LR (8 tests)
-- [ ] Phase 5 — DepGraph structured pruning + self-distillation (→ 2.1k params)
-- [ ] Phase 6 — INT8 PTQ + ONNX/TFLite export
+- [x] Phase 5 — DepGraph structured pruning + self-distillation (2,118 params, val AUC 0.9462)
+- [x] Phase 6 — INT8 PTQ + ONNX/TFLite export
 - [ ] Phase 7 — strictly causal evaluation + cross-VAD benchmarking
 - [ ] Phase 8 — embedded C streaming engine + hardware profiling
 
