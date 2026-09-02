@@ -40,7 +40,9 @@ class CachedWindows(Dataset):
         return len(self.labels)
 
     def __getitem__(self, i):
-        x = torch.from_numpy(np.ascontiguousarray(self.features[i]))
+        # .copy() makes a writable array (memmap is read-only) so torch
+        # doesn't emit the non-writable-tensor UserWarning.
+        x = torch.from_numpy(np.ascontiguousarray(self.features[i]).copy())
         return x, int(self.labels[i])
 
 
