@@ -258,3 +258,93 @@ def distill(seed: int = 0, epochs: int = 8, num_workers: int = 8):
     print(json.dumps({"best": best, "seed": seed,
                       "params": param_count(student)}, indent=2), flush=True)
     volume.commit()
+
+
+@app.function(image=image, volumes={DATA_ROOT: volume}, timeout=2 * 3600)
+def export(seed: int = 0, calib_batches: int = 64):
+    """Phase-06: BN-fold the pruned student, INT8 RTN-quantize, verify the
+    AUC gate, export ONNX (FP32 + INT8 QDQ) and the C weights header.
+
+    uv run modal run modal_app.py::export --seed 0
+    """
+    import numpy as np
+    import torch
+    from torch.utils.data import DataLoader
+
+    from pulsevad.export_onnx import (export_onnx, quantize_onnx_int8,
+                                      session_logits, verify_parity)
+    from pulsevad.prune import build_student
+    from pulsevad.quantize import (Int8PulseVAD, fake_quant_weights,
+                                   fold_batchnorm, weight_scales,
+                                   write_c_header)
+    from pulsevad.train import CachedWindows, evaluate
+
+    volume.reload()
+    out_dir = Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}"
+    ck = torch.load(out_dir / "pruned_model_2.1k.pth", map_location="cpu",
+                    weights_only=False)
+    print(f"[export] pruned student: epoch {ck['epoch']}, "
+          f"val AUC {ck['metrics']['auc']:.4f}", flush=True)
+
+    # Rebuild the pruned architecture (same DepGraph plan -> same shapes),
+    # then load the distilled weights.
+    student = build_student()
+    student.load_state_dict(ck["model"])
+
+    # 1) BN folding -> folded FP32 reference
+    folded = fold_batchnorm(student)
+
+    # 2) INT8: calibrate activations on train features, RTN-quantize weights
+    train_ds = CachedWindows(Path(DATA_ROOT) / "cache" / "train_features.npy",
+                             Path(DATA_ROOT) / "cache" / "train_labels.npy")
+    gen = torch.Generator().manual_seed(seed)
+    calib_loader = DataLoader(train_ds, batch_size=512, shuffle=True,
+                              generator=gen, num_workers=2)
+    int8_model = Int8PulseVAD()
+    int8_model.load_state_dict(folded.state_dict())
+    calib = [x for x, _ in list(zip(range(calib_batches), calib_loader))]
+    scales = int8_model.calibrate(calib)
+    fake_quant_weights(int8_model, weight_scales(int8_model))
+    print(f"[export] calibrated {len(scales)} activation points, "
+          f"weights fake-quantized", flush=True)
+
+    # 3) AUC gate on real validation data: INT8 must match FP32 within 0.002
+    val_ds = CachedWindows(Path(DATA_ROOT) / "cache" / "val_features.npy",
+                           Path(DATA_ROOT) / "cache" / "val_labels.npy")
+    val_loader = DataLoader(val_ds, batch_size=512, num_workers=2)
+    ref_x = np.concatenate([val_ds[i][0].numpy()[None] for i in range(4)])
+    parity = verify_parity(folded, export_onnx(folded, out_dir / "pulsevad_2.1k.onnx"),
+                           torch.from_numpy(ref_x))
+    print(f"[export] ONNX FP32 parity: max |diff| {parity:.2e}", flush=True)
+
+    quantize_onnx_int8(
+        out_dir / "pulsevad_2.1k.onnx", out_dir / "pulsevad_2.1k_int8.onnx",
+        [val_ds[i][0].numpy()[None] for i in range(0, 2048, 4)],
+    )
+    fp32_m = evaluate(folded, val_loader, device="cpu", label_smoothing=0.09)
+    int8_m = evaluate(int8_model, val_loader, device="cpu", label_smoothing=0.09)
+    auc_gap = abs(fp32_m["auc"] - int8_m["auc"])
+    print(f"[export] FP32 AUC {fp32_m['auc']:.4f} / INT8 AUC {int8_m['auc']:.4f} "
+          f"(gap {auc_gap:.4f})", flush=True)
+    assert auc_gap <= 0.002, f"INT8 AUC gap {auc_gap:.4f} exceeds spec gate 0.002"
+
+    # 4) INT8 ONNX parity + C header + int8 artifact
+    with torch.no_grad():
+        i8_ref = int8_model(torch.from_numpy(ref_x)).numpy()
+    i8_ort = session_logits(out_dir / "pulsevad_2.1k_int8.onnx", ref_x)
+    onnx_i8_diff = float(np.abs(i8_ref - i8_ort).max())
+    print(f"[export] ONNX INT8 vs fake-quant max |diff| {onnx_i8_diff:.4f}", flush=True)
+
+    write_c_header(int8_model, out_dir / "pulsevad_weights.h")
+    save_meta = {
+        "seed": seed, "params": int(sum(p.numel() for p in folded.parameters())),
+        "fp32_val_auc": fp32_m["auc"], "int8_val_auc": int8_m["auc"],
+        "onnx_fp32_parity": parity, "onnx_int8_diff": onnx_i8_diff,
+    }
+    from pulsevad.quantize import save_int8
+    save_int8(int8_model, out_dir / "pulsevad_2.1k_int8.pth", save_meta)
+    (out_dir / "export_manifest.json").write_text(
+        json.dumps({**save_meta, "act_scales": scales}, indent=2))
+    volume.commit()
+    print(json.dumps(save_meta, indent=2), flush=True)
+    return save_meta
