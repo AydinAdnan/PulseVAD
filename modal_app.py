@@ -426,3 +426,172 @@ def eval_heldout(seed: int = 0):
     volume.commit()
     print(json.dumps(report["student_2.1k_fp32"], indent=2), flush=True)
     return report
+
+
+@app.function(image=image, volumes={DATA_ROOT: volume}, timeout=6 * 3600, cpu=4)
+def cache_eval_audio(seed: int = 123, n_eval_windows: int = 2000):
+    """Regenerate the 5 held-out eval sets with raw audio saved alongside the
+    features, so competitor VADs (Silero, MarbleNet) score the SAME windows.
+
+    Deterministic (seeded): regenerates the identical windows from build_cache.
+
+    uv run modal run modal_app.py::cache_eval_audio
+    """
+    from pulsevad.build_cache import build_eval_sets
+
+    volume.reload()
+    data = Path(DATA_ROOT)
+    summary = build_eval_sets(
+        speech_dir=Path(SPEECH_ROOT),
+        labels_dir=Path(LABELS_ROOT),
+        noise_dirs=[
+            data / "raw" / "musan" / "noise",
+            data / "raw" / "DNS-Challenge" / "datasets" / "full" / "no_noise" / "free_sound",
+        ],
+        out_dir=data / "cache" / "eval_sets",
+        n_windows=n_eval_windows,
+        seed=seed,
+        save_audio=True,
+    )
+    print(json.dumps(summary, indent=2))
+    volume.commit()
+
+
+# Separate image: silero-vad weights download from GitHub on first use.
+vad_image = image.pip_install("silero-vad")
+
+
+@app.function(image=vad_image, volumes={DATA_ROOT: volume}, timeout=2 * 3600, cpu=4)
+def eval_competitors(seed: int = 123):
+    """Score downloadable competitor VADs (Silero v5) on the SAME eval windows
+    PulseVAD is scored on -> competitor_report.json on the volume.
+
+    MarbleNet needs the full NVIDIA NeMo toolkit; see eval_marblenet.
+
+    uv run modal run modal_app.py::eval_competitors
+    """
+    import numpy as np
+    import torch
+    from silero_vad import load_silero_vad
+
+    from pulsevad.eval import causal_metrics
+
+    volume.reload()
+    eval_dir = Path(DATA_ROOT) / "cache" / "eval_sets"
+    cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
+    model = load_silero_vad()
+    report = {"Silero-VAD v5 (measured, same windows)": {}}
+    for cat in cats:
+        audio = np.load(eval_dir / f"eval_{cat}_audio.npy")  # (N, 3200) float32
+        labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
+        probs = np.empty(len(audio))
+        with torch.no_grad():
+            for i, win in enumerate(audio):
+                # Silero v5 streams in 512-sample (32 ms) chunks; a 200 ms
+                # window score = mean over its 6 causal sub-chunks only.
+                chunks = torch.from_numpy(win[: len(win) // 512 * 512]).reshape(-1, 512)
+                probs[i] = model(chunks).mean().item()
+        report["Silero-VAD v5 (measured, same windows)"][cat] = causal_metrics(labels, probs)
+        print(f"[silero:{cat}] {report['Silero-VAD v5 (measured, same windows)'][cat]}",
+              flush=True)
+    (Path(DATA_ROOT) / "runs" / f"pruned_seed_0" / "competitor_report.json").write_text(
+        json.dumps(report, indent=2))
+    volume.commit()
+    return report
+
+
+# Heavy, isolated image: NVIDIA NeMo for the MarbleNet checkpoint.
+nemo_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("torch==2.5.1", "torchaudio==2.5.1", "numpy<2")
+    .pip_install("nemo_toolkit[asr]", "onnxruntime", "scikit-learn")
+    .add_local_python_source("pulsevad")
+)
+
+
+@app.function(image=nemo_image, volumes={DATA_ROOT: volume}, timeout=4 * 3600,
+              gpu="T4", cpu=8)
+def eval_marblenet():
+    """Score NVIDIA's vad_marblenet checkpoint on the SAME eval windows.
+
+    Checkpoint: catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/vad_marblenet
+    (downloads automatically via NeMo). If NeMo/NGC is unavailable, the run
+    writes a 'skipped' marker instead of failing the pipeline.
+
+    uv run modal run modal_app.py::eval_marblenet
+    """
+    import numpy as np
+    import torch
+
+    from pulsevad.eval import causal_metrics
+
+    volume.reload()
+    eval_dir = Path(DATA_ROOT) / "cache" / "eval_sets"
+    out = Path(DATA_ROOT) / "runs" / "pruned_seed_0" / "competitor_report.json"
+    report = {}
+    if out.exists():
+        report = json.loads(out.read_text())
+
+    try:
+        from nemo.collections.asr.models import EncDecClassificationModel
+        mnet = EncDecClassificationModel.from_pretrained("vad_marblenet")
+        mnet.eval()
+    except Exception as e:  # noqa: BLE001 — record and exit cleanly
+        print(f"[marblenet] unavailable: {e}", flush=True)
+        report["MarbleNet (measured, same windows)"] = {"skipped": str(e)}
+        out.write_text(json.dumps(report, indent=2))
+        volume.commit()
+        return report
+
+    cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
+    report["MarbleNet (measured, same windows)"] = {}
+    for cat in cats:
+        audio = np.load(eval_dir / f"eval_{cat}_audio.npy")
+        labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
+        probs = np.empty(len(audio))
+        with torch.no_grad():
+            for i, win in enumerate(audio):
+                sig = torch.from_numpy(win[None, :])  # (1, 3200) 16 kHz
+                logits = mnet.forward(input_signal=sig, length=torch.tensor([3200]))
+                probs[i] = torch.sigmoid(logits).mean().item()
+        report["MarbleNet (measured, same windows)"][cat] = causal_metrics(labels, probs)
+        print(f"[marblenet:{cat}] {report['MarbleNet (measured, same windows)'][cat]}",
+              flush=True)
+    out.write_text(json.dumps(report, indent=2))
+    volume.commit()
+    return report
+
+
+@app.function(image=image, volumes={DATA_ROOT: volume}, timeout=1 * 3600)
+def build_comparison(seed: int = 0):
+    """Assemble comparison.md / comparison.json: our measured rows (from
+    eval_heldout) + measured competitors (eval_competitors / eval_marblenet)
+    + cited rows with where-we-win / where-we-lose analysis.
+
+    uv run modal run modal_app.py::build_comparison --seed 0
+    """
+    from pulsevad.eval import OURS, build_comparison
+
+    volume.reload()
+    out_dir = Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}"
+    heldout = json.loads((out_dir / "heldout_report.json").read_text())
+
+    ours_measured = {}
+    for name, row in heldout["per_model"].items():
+        entry = dict(row)
+        ref = OURS["PulseVAD (teacher, unpruned)"] if "teacher" in name \
+            else OURS["PulseVAD (ship, pruned)"]
+        entry.update(params=ref["params"])
+        ours_measured[name] = entry
+    for fname, label in [("competitor_report.json", None)]:
+        fp = out_dir / fname
+        if fp.exists():
+            for name, row in json.loads(fp.read_text()).items():
+                if isinstance(row, dict) and "clean" in row:
+                    ours_measured[name] = row
+
+    md, data = build_comparison(ours_measured)
+    (out_dir / "comparison.md").write_text(md)
+    (out_dir / "comparison.json").write_text(json.dumps(data, indent=2))
+    volume.commit()
+    print(md, flush=True)
