@@ -38,7 +38,7 @@ image = (
 gpu_image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install("torch==2.5.1", "torchaudio==2.5.1")
-    .pip_install("numpy<2", "scikit-learn", "tqdm")
+    .pip_install("numpy<2", "scikit-learn", "tqdm", "torch-pruning>=1.4.0")
     .add_local_python_source("pulsevad")
 )
 
@@ -219,4 +219,42 @@ def train(seed: int = 0, epochs: int = 40, num_workers: int = 8):
         num_workers=num_workers,
     )
     print(json.dumps({"best": best, "seed": seed}, indent=2), flush=True)
+    volume.commit()
+
+
+@app.function(
+    image=gpu_image, volumes={DATA_ROOT: volume}, timeout=4 * 3600,
+    gpu="T4", cpu=8,
+)
+def distill(seed: int = 0, epochs: int = 8, num_workers: int = 8):
+    """Phase-05: DepGraph-prune the seed's teacher to 2.1k, then self-distill.
+
+    uv run modal run modal_app.py::distill --seed 0
+    """
+    import torch
+
+    from pulsevad.model import PulseVAD
+    from pulsevad.prune import build_student, distill_finetune, param_count
+
+    volume.reload()  # teacher checkpoint committed by ::train
+    ck = torch.load(
+        Path(DATA_ROOT) / "runs" / f"seed_{seed}" / "best_model.pth",
+        map_location="cpu", weights_only=False,
+    )
+    teacher = PulseVAD()
+    teacher.load_state_dict(ck["model"])
+    print(f"[distill] teacher: seed {seed}, epoch {ck['epoch']}, "
+          f"AUC {ck['metrics']['auc']:.4f}", flush=True)
+
+    student = build_student(teacher)
+    print(f"[distill] student: {param_count(student)} params", flush=True)
+
+    best = distill_finetune(
+        teacher, student,
+        cache_dir=Path(DATA_ROOT) / "cache",
+        out_dir=Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}",
+        epochs=epochs, seed=seed, num_workers=num_workers,
+    )
+    print(json.dumps({"best": best, "seed": seed,
+                      "params": param_count(student)}, indent=2), flush=True)
     volume.commit()
