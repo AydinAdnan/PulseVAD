@@ -171,6 +171,73 @@ def _frontend_batch(frontend: MelFrontend, windows: list[np.ndarray]) -> np.ndar
         return frontend(x).numpy().astype(np.float32)  # (W, 64, 21)
 
 
+_W = {}  # per-process worker state (noise reader, RIR pool, frontend)
+
+
+def _worker_init(noise_dirs, rir_pool_size, base_seed, noise_only_frac,
+                 max_windows_per_file):
+    """ProcessPoolExecutor initializer: build the heavy per-process state once."""
+    _W["reader"] = NoiseReader(build_noise_pool(noise_dirs))
+    rng = np.random.default_rng(base_seed)
+    _W["rir_pool"] = [simulate_rir(rng=rng) for _ in range(rir_pool_size)]
+    _W["frontend"] = MelFrontend()
+    _W["noise_only_frac"] = noise_only_frac
+    _W["max_windows_per_file"] = max_windows_per_file
+
+
+def _process_file(item):
+    """Featurize one file -> (offset, n, features, labels, cat_counts).
+
+    Per-file RNG (base_seed + 7919*file_idx) keeps results deterministic
+    regardless of process scheduling.
+    """
+    file_idx, path, lj, n_win, offset, base_seed = item
+    rng = np.random.default_rng(base_seed + 7919 * file_idx)
+    reader, rir_pool = _W["reader"], _W["rir_pool"]
+    wav = read_mono(Path(path))
+    seg_manifest = json.loads(Path(lj).read_text())
+    flags = file_frame_flags(seg_manifest["segments"], len(wav))
+
+    starts = list(range(0, len(wav) - WINDOW_SAMPLES + 1, HOP_SAMPLES))
+    if not starts:
+        return offset, 0, None, None, None
+    mwpf = _W["max_windows_per_file"]
+    if mwpf is not None and len(starts) > mwpf:
+        step = len(starts) / mwpf
+        starts = [starts[int(k * step)] for k in range(mwpf)]
+
+    windows, win_labels = [], []
+    cat_counts = {"clean": 0, "wind": 0, "noise": 0}
+    for s0 in starts:
+        if rng.random() < _W["noise_only_frac"]:
+            # Pure-noise window labeled 0: without these, the model never sees
+            # noise without speech (silence-window SNR mixing zeroes the noise
+            # out) and scores pure noise at ~0.5 — failing the phase-07
+            # pure-noise FPR < 5% gate.
+            windows.append(reader.load_window(rng))
+            win_labels.append(0)
+            cat_counts["noise"] += 1
+            continue
+        category = draw_category(rng)
+        seg = augment_window(
+            wav[s0 : s0 + WINDOW_SAMPLES].astype(np.float32).copy(),
+            category, rng, reader, rir_pool,
+        )
+        cat_counts[category] += 1
+        windows.append(seg)
+        win_labels.append(window_label(flags, s0))
+
+    feats = _frontend_batch(_W["frontend"], windows)
+    return offset, len(windows), feats, np.array(win_labels, dtype=np.uint8), cat_counts
+
+
+def _max_starts(starts, max_windows_per_file=None):
+    if max_windows_per_file is not None and len(starts) > max_windows_per_file:
+        step = len(starts) / max_windows_per_file
+        return [starts[int(k * step)] for k in range(max_windows_per_file)]
+    return starts
+
+
 def build_cache(
     speech_dir,
     labels_dir,
@@ -181,9 +248,13 @@ def build_cache(
     rir_pool_size: int = 200,
     max_windows_per_file: int | None = None,
     noise_only_frac: float = 0.10,
+    workers: int = 8,
 ) -> dict:
     """Two-pass build: count windows from label durations, pre-allocate memmaps,
-    fill file-by-file. Returns the manifest describing everything on disk."""
+    fill via a process pool (one task per file). Returns the manifest."""
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+    from multiprocessing import cpu_count
+
     rng = np.random.default_rng(seed)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -193,27 +264,16 @@ def build_cache(
     n_val = max(1, int(len(files) * val_frac)) if len(files) > 20 else 0
     splits = {"train": files[n_val:], "val": files[:n_val]}
 
-    noise_pool = build_noise_pool(noise_dirs)
-    print(f"[build] noise pool: {len(noise_pool)} files", flush=True)
-    print(f"[build] simulating {rir_pool_size} room impulse responses…", flush=True)
-    rir_pool = [simulate_rir(rng=rng) for _ in range(rir_pool_size)]
-    print("[build] RIR pool done", flush=True)
-    noise_reader = NoiseReader(noise_pool)
-
     manifest = {
         "window_samples": WINDOW_SAMPLES,
         "hop_samples": HOP_SAMPLES,
         "seed": seed,
-        "rir_pool_size": rir_pool_size,
-        "noise_files": len(noise_pool),
+        "workers": workers,
         "splits": {},
     }
 
     for tag, split_files in splits.items():
-        local_rng = np.random.default_rng(seed + (1 if tag == "val" else 0))
-        # durations via thread pool: 28k small json reads are I/O-bound over NFS
-        from concurrent.futures import ThreadPoolExecutor
-
+        base_seed = seed + (1 if tag == "val" else 0)
         print(f"[build:{tag}] reading {len(split_files)} label manifests…", flush=True)
         with ThreadPoolExecutor(max_workers=32) as ex:
             durations = list(
@@ -234,50 +294,41 @@ def build_cache(
         labels = np.lib.format.open_memmap(
             out_dir / f"{tag}_labels.npy", mode="w+", dtype=np.uint8, shape=(n_total,)
         )
-        frontend = MelFrontend()
-        cat_counts = {"clean": 0, "wind": 0, "noise": 0}
-        i = 0
+
+        # work items with precomputed memmap offsets (prefix sums)
+        items, offsets, done = [], [], 0
         for file_idx, ((path, lj), n_win) in enumerate(zip(split_files, counts)):
-            if file_idx % 500 == 0 and file_idx:
-                print(
-                    f"[build:{tag}] {file_idx}/{len(split_files)} files, "
-                    f"{i}/{n_total} windows ({100 * i / max(n_total, 1):.1f}%)",
-                    flush=True,
-                )
-            if n_win == 0:
-                continue
-            wav = read_mono(Path(path))
-            seg_manifest = json.loads(Path(lj).read_text())
-            flags = file_frame_flags(seg_manifest["segments"], len(wav))
+            offsets.append(done)
+            done += n_win
+            if n_win:
+                items.append((file_idx, path, lj, n_win, offsets[-1], base_seed))
 
-            starts = list(range(0, len(wav) - WINDOW_SAMPLES + 1, HOP_SAMPLES))
-            if max_windows_per_file is not None and len(starts) > max_windows_per_file:
-                step = len(starts) / max_windows_per_file
-                starts = [starts[int(k * step)] for k in range(max_windows_per_file)]
-
-            windows, win_labels = [], []
-            for s0 in starts:
-                if local_rng.random() < noise_only_frac:
-                    # Pure-noise window labeled 0: without these, the model
-                    # never sees noise without speech (silence-window SNR
-                    # mixing zeroes the noise out) and scores pure noise at
-                    # ~0.5 — failing the phase-07 pure-noise FPR < 5% gate.
-                    windows.append(noise_reader.load_window(local_rng))
-                    win_labels.append(0)
-                    cat_counts["noise"] += 1
-                    continue
-                category = draw_category(local_rng)
-                seg = augment_window(
-                    wav[s0 : s0 + WINDOW_SAMPLES].astype(np.float32).copy(),
-                    category, local_rng, noise_reader, rir_pool,
-                )
-                cat_counts[category] += 1
-                windows.append(seg)
-                win_labels.append(window_label(flags, s0))
-
-            feats[i : i + n_win] = _frontend_batch(frontend, windows)
-            labels[i : i + n_win] = np.array(win_labels, dtype=np.uint8)
-            i += n_win
+        n_workers = max(1, min(workers, cpu_count() or workers))
+        print(f"[build:{tag}] {n_total} windows over {len(items)} files "
+              f"on {n_workers} workers", flush=True)
+        cat_counts = {"clean": 0, "wind": 0, "noise": 0}
+        written = 0
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_worker_init,
+            initargs=(noise_dirs, rir_pool_size, base_seed, noise_only_frac,
+                      max_windows_per_file),
+        ) as pool:
+            futs = {pool.submit(_process_file, it): it[4] for it in items}
+            done = 0
+            for fut in as_completed(futs):
+                offset, n, f, lab, cats = fut.result()
+                if n:
+                    feats[offset:offset + n] = f
+                    labels[offset:offset + n] = lab
+                    for k in cat_counts:
+                        cat_counts[k] += cats[k]
+                written += n
+                done += 1
+                if done % 500 == 0:
+                    print(f"[build:{tag}] {done}/{len(items)} files, "
+                          f"{written}/{n_total} windows "
+                          f"({100 * written / max(n_total, 1):.1f}%)", flush=True)
 
         manifest["splits"][tag] = {
             "features": f"{tag}_features.npy",
@@ -286,7 +337,7 @@ def build_cache(
             "hours": round(n_total * HOP_SAMPLES / 16_000 / 3600, 2),
             "categories": cat_counts,
         }
-        print(f"[{tag}] {n_total} windows ({cat_counts})")
+        print(f"[{tag}] {n_total} windows ({cat_counts})", flush=True)
 
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest

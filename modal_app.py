@@ -168,7 +168,7 @@ def verify(sample_size: int = 500):
     return summary
 
 
-@app.function(image=image, volumes={DATA_ROOT: volume}, timeout=6 * 3600, cpu=4)
+@app.function(image=image, volumes={DATA_ROOT: volume}, timeout=6 * 3600, cpu=8)
 def build_cache(seed: int = 0, n_eval_windows: int = 2000):
     """Mix, augment, featurize -> train/val memmaps + 5 held-out eval sets."""
     from pulsevad.build_cache import build_cache, build_eval_sets
