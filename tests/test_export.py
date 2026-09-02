@@ -11,8 +11,17 @@ from pulsevad.export_onnx import export_onnx, verify_parity
 
 
 def _folded_pair(seed=0):
+    """Model with realistic trained BN buffers (non-default mean/var) — default
+    0/1 buffers let fold bugs hide because random-init logits are tiny."""
     torch.manual_seed(seed)
     model = PulseVAD().eval()
+    with torch.no_grad():
+        for mod in model.modules():
+            if isinstance(mod, torch.nn.BatchNorm1d):
+                mod.running_mean.uniform_(-0.5, 0.5)
+                mod.running_var.uniform_(0.05, 4.0)
+                mod.weight.uniform_(0.5, 1.5)
+                mod.bias.uniform_(-0.2, 0.2)
     return model, fold_batchnorm(model)
 
 

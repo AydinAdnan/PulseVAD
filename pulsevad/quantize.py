@@ -110,6 +110,9 @@ def fold_batchnorm(model) -> FoldedPulseVAD:
             getattr(folded, dst).bias.copy_(bn.bias - bn.running_mean * gain)
         folded.conv0_dw.weight.copy_(model.conv0_dw.weight)
         folded.conv4_dw.weight.copy_(model.conv4_dw.weight)
+        # BN-less depthwise convs inside block3 — copy verbatim
+        folded.subA_dw.weight.copy_(model.block3.subA_dw.weight)
+        folded.subC_dw.weight.copy_(model.block3.subC_dw.weight)
         folded.classifier.weight.copy_(model.classifier.weight)
         folded.classifier.bias.copy_(model.classifier.bias)
     return folded
