@@ -30,7 +30,8 @@ image = (
     .pip_install("torch==2.5.1", "torchaudio==2.5.1", index_url=PYTORCH_CPU)
     .pip_install(
         "numpy<2", "scipy", "soundfile", "pyroomacoustics", "tqdm", "onnxruntime",
-        "onnx", "torch-pruning>=1.4.0",  # used by ::export (prune + onnx export)
+        "onnx", "scikit-learn",  # sklearn: evaluate() AUC, used by ::export
+        "torch-pruning>=1.4.0",  # used by ::export (prune + onnx export)
     )
     .add_local_python_source("pulsevad")
 )
