@@ -100,6 +100,7 @@ def fold_batchnorm(model) -> FoldedPulseVAD:
         "c5": model.conv5.conv.out_channels,
     }
     folded = FoldedPulseVAD(dims).eval()
+    folded.dims = dims  # so Int8PulseVAD(folded.dims) matches exactly
     with torch.no_grad():
         for dst, src in _BN_FOLD_PAIRS:
             cbn = model.get_submodule(src)
@@ -143,8 +144,8 @@ def fake_quant_weights(model: nn.Module, scales: dict[str, torch.Tensor]) -> Non
 class Int8PulseVAD(FoldedPulseVAD):
     """Folded model with int8 fake-quant weights + per-tensor activation Q/DQ."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, dims: dict | None = None) -> None:
+        super().__init__(dims)
         self.act_scales: dict[str, torch.Tensor] = {}
         self._qact = False
         self._record: dict[str, torch.Tensor] | None = None
