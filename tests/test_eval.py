@@ -64,3 +64,27 @@ def test_ava_binning_majority():
 def test_mean_ci():
     mean, ci = mean_ci([0.84, 0.85, 0.86])
     assert abs(mean - 0.85) < 1e-9 and 0 < ci < 0.02
+
+
+def test_comparison_artifact():
+    from pulsevad.eval import build_comparison
+    ours = {
+        "PulseVAD (teacher, unpruned)": {
+            "params": 81090,
+            **{c: {"auc": 0.97, "fpr_at_tpr95": 0.05} for c in
+               ("clean", "windy", "dns_synthetic", "speech_noise", "pure_noise")},
+        },
+        "PulseVAD (ship, pruned)": {
+            "params": 2118,
+            **{c: {"auc": 0.93, "fpr_at_tpr95": 0.04} for c in
+               ("clean", "windy", "dns_synthetic", "speech_noise", "pure_noise")},
+        },
+    }
+    md, data = build_comparison(ours)
+    assert "vs MarbleNet [cited]" in md
+    assert "43.0x fewer parameters" in md  # 91k / 2,118
+    assert "257.3x fewer parameters" in md  # 545k / 2,118 vs Silero
+    assert "**loss**" in md  # AtomicVAD smaller; Silero lower latency — honest losses
+    assert "Summary wins" in md and data["wins"]
+    # measured AUC table lists both models with 5 categories
+    assert md.count("**PulseVAD (ship, pruned)**") >= 2

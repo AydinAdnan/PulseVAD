@@ -293,6 +293,7 @@ def build_eval_sets(
     n_windows: int = 2_000,
     seed: int = 123,
     rir_pool_size: int = 50,
+    save_audio: bool = False,
 ) -> dict:
     """Five held-out categories (build plan §8.2), drawn from the full corpus.
 
@@ -343,6 +344,11 @@ def build_eval_sets(
         f = _frontend_batch(frontend, feats)
         np.save(out_dir / f"eval_{cat}_features.npy", f)
         np.save(out_dir / f"eval_{cat}_labels.npy", np.array(labels, dtype=np.uint8))
+        if save_audio:
+            # raw mixed audio so competitor VADs (Silero, MarbleNet) can score
+            # the SAME windows we score — the apples-to-apples phase-7 eval
+            np.save(out_dir / f"eval_{cat}_audio.npy",
+                    np.stack(feats).astype(np.float32))
         summary[cat] = {"n": n_windows, "speech_fraction": float(np.mean(labels))}
         print(f"[eval:{cat}] {n_windows} windows, speech fraction {summary[cat]['speech_fraction']:.3f}")
 

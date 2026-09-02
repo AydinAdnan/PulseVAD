@@ -121,3 +121,128 @@ def mean_ci(values: list, z: float = 1.96) -> tuple[float, float]:
     """Mean and 95% CI half-width (normal approx; n>=3 seeds)."""
     v = np.asarray(values, dtype=np.float64)
     return float(v.mean()), float(z * v.std(ddof=1) / np.sqrt(len(v)))
+
+
+# ---------------------------------------------------------------- comparison
+
+# Our shipped artifacts (measured: pulsevad/, this repo). Footprints are
+# weight bytes: params x 4 (FP32) / params x 1 (+scale tables) (INT8).
+OURS = {
+    "PulseVAD (teacher, unpruned)": {
+        "params": 81_090, "macs": 1_660_000, "latency_ms": 200,
+        "footprint_kb": {"fp32": 324.4, "int8": 81.1}, "commercial": "YES (100% permissive)",
+    },
+    "PulseVAD (ship, pruned)": {
+        "params": 2_118, "macs": 44_000, "latency_ms": 200,
+        "footprint_kb": {"fp32": 8.5, "int8": 2.1}, "commercial": "YES (100% permissive)",
+    },
+}
+
+# Competitors without runnable public weights: cited rows (paper Table 1 /
+# spec phase-07 §2). `protocol` flags causal vs the inflated non-causal
+# sliding-window protocol — NOT directly comparable to our measured rows.
+CITED = [
+    {"name": "Silero-VAD (v5/v6) [cited]", "params": 545_000, "footprint": "~2.2 MB",
+     "macs": ">10M", "ava_auc": 0.920, "latency_ms": 32, "commercial": "YES (MIT)",
+     "protocol": "causal", "source": "github.com/snakers4/silero-vad"},
+    {"name": "MarbleNet [cited]", "params": 91_000, "footprint": "~364 KB",
+     "macs": ">2.0M", "ava_auc": 0.850, "latency_ms": 630, "commercial": "NS",
+     "protocol": "causal", "source": "catalog.ngc.nvidia.com (vad_marblenet)"},
+    {"name": "AtomicVAD [cited]", "params": 300, "footprint": "~1.2 KB",
+     "macs": 6_000, "ava_auc": 0.869, "latency_ms": 630, "commercial": "NS",
+     "protocol": "causal", "source": "Analog Devices (GGCU custom activation, R2 fails)"},
+    {"name": "TinyVAD [cited]", "params": 11_600, "footprint": "n/a",
+     "macs": None, "ava_auc": 0.864, "latency_ms": 630, "commercial": "n/a",
+     "protocol": "NON-CAUSAL 87.5% overlap", "source": "paper"},
+    {"name": "SincQDR [cited]", "params": 8_000, "footprint": "n/a",
+     "macs": None, "ava_auc": 0.914, "latency_ms": 1181, "commercial": "n/a",
+     "protocol": "NON-CAUSAL 87.5% overlap", "source": "paper"},
+    {"name": "ResectNet [cited]", "params": 4_500, "footprint": "n/a",
+     "macs": None, "ava_auc": 0.886, "latency_ms": 200, "commercial": "n/a",
+     "protocol": "causal", "source": "paper (GRU, R2 fails)"},
+]
+
+
+def build_comparison(ours_measured: dict, ours: dict | None = None,
+                     cited: list | None = None) -> tuple[str, dict]:
+    """Merge measured rows (per-category AUC) with cited competitor rows into
+    the comparison artifact. Returns (markdown, data).
+
+    `ours_measured`: {model_name: {"clean": {...}, ..., "params": int, ...}}
+    including per-category causal_metrics + optionally a measured competitor.
+    """
+    ours = ours or OURS
+    cited = cited or CITED
+    ship = ours["PulseVAD (ship, pruned)"]
+
+    data = {"ours": ours_measured, "cited": cited, "wins": []}
+    lines = [
+        "# PulseVAD Cross-VAD Comparison (strictly causal protocol)", "",
+        "All PulseVAD rows are measured by this repo (`pulsevad/eval.py`); the",
+        "5 held-out categories are scored with zero overlap, zero smoothing.",
+        "[cited] rows are competitor SELF-REPORTED numbers — see `protocol`",
+        "column before comparing AUCs.", "",
+    ]
+
+    # ---- headline table: size / compute / latency / license
+    lines += ["## Size, compute, latency, license", "",
+              "| Model | Params | Footprint | MACs/200ms | Input latency | Commercial |",
+              "|---|---|---|---|---|---|"]
+    for name, r in ours.items():
+        lines.append(f"| **{name}** (measured) | {r['params']:,} | "
+                     f"{r['footprint_kb']['fp32']:.1f} KB FP32 / {r['footprint_kb']['int8']:.1f} KB INT8 | "
+                     f"{r['macs']:,} | {r['latency_ms']} ms | {r['commercial']} |")
+    for c in cited:
+        lines.append(f"| {c['name']} | {c['params']:,} | {c['footprint']} | {c['macs']} | "
+                     f"{c['latency_ms']} ms | {c['commercial']} |")
+    lines.append("")
+
+    # ---- measured AUC table (our models + any same-audio competitor)
+    lines += ["## Measured AUC — 5 held-out categories (this repo, same windows)",
+              "", "| Model | " + " | ".join(
+                  sorted(k for k in next(iter(ours_measured.values()))
+                         if isinstance(next(iter(ours_measured.values()))[k], dict))) + " |",
+              "|---|" + "---|" * 5]
+    for name, row in ours_measured.items():
+        cells = " | ".join(
+            f"{row[c]['auc']:.3f}" if isinstance(row.get(c), dict) else str(row.get(c, "—"))
+            for c in sorted(k for k in row if isinstance(row.get(k), dict)))
+        lines.append(f"| **{name}** | {cells} |")
+    lines.append("")
+
+    # ---- where we win / lose, computed per cited competitor
+    lines += ["## Where the 2.1k ship model wins (and where it doesn't)", ""]
+    wins = []
+    for c in cited:
+        if c["name"].startswith("Silero") and "Silero (measured)" in ours_measured:
+            continue  # measured row supersedes cited for win math? keep both
+        p_ratio = c["params"] / ship["params"]
+        m = [f"### vs {c['name']}", ""]
+        if c["protocol"] != "causal":
+            m.append(f"- protocol: **{c['protocol']}** — AUC {c['ava_auc']} is inflated; "
+                     f"not comparable to our causal numbers.")
+        if ship["params"] < c["params"]:
+            wins.append(f"{p_ratio:.1f}x fewer parameters than {c['name']}")
+            m.append(f"- **win**: {p_ratio:.1f}x fewer params ({ship['params']:,} vs {c['params']:,})")
+        else:
+            m.append(f"- **loss**: {c['name']} is {1/p_ratio:.1f}x smaller "
+                     f"({c['params']:,} vs {ship['params']:,} params)")
+        if c["macs"] and isinstance(c["macs"], int) and ship["macs"] < c["macs"]:
+            m.append(f"- **win**: {c['macs']/ship['macs']:.1f}x fewer MACs "
+                     f"({ship['macs']:,} vs {c['macs']:,})")
+        if c["latency_ms"] > ship["latency_ms"]:
+            wins.append(f"{c['latency_ms']/ship['latency_ms']:.1f}x lower input latency than {c['name']}")
+            m.append(f"- **win**: {c['latency_ms']/ship['latency_ms']:.1f}x lower latency "
+                     f"({ship['latency_ms']} ms vs {c['latency_ms']} ms)")
+        elif c["latency_ms"] < ship["latency_ms"]:
+            m.append(f"- **loss**: {c['name']} has {ship['latency_ms']/c['latency_ms']:.1f}x "
+                     f"lower latency ({c['latency_ms']} ms vs {ship['latency_ms']} ms)")
+        if c["commercial"] == "NS":
+            m.append("- **win**: license/commercial cleanness unverified for them (NS); "
+                     "PulseVAD is 100% permissive")
+        m.append(f"- cited AUC {c['ava_auc']} ({c['protocol']}); ours: see measured table")
+        lines += m + [""]
+
+    lines = ["## Summary wins", ""] + [f"- {w}" for w in wins] + [""] + lines
+    data["wins"] = wins
+    return "\n".join(lines), data
