@@ -314,6 +314,11 @@ def export(seed: int = 0, calib_batches: int = 64):
     val_ds = CachedWindows(Path(DATA_ROOT) / "cache" / "val_features.npy",
                            Path(DATA_ROOT) / "cache" / "val_labels.npy")
     val_loader = DataLoader(val_ds, batch_size=512, num_workers=2)
+    # diagnostic: raw rebuilt student (pre-fold) vs folded must agree; if the
+    # raw student differs from the distill run's 0.9462, the rebuild is suspect
+    raw_m = evaluate(student, val_loader, device="cpu", label_smoothing=0.09)
+    print(f"[export] raw rebuilt student AUC {raw_m['auc']:.4f} "
+          f"(distill logged {ck['metrics']['auc']:.4f})", flush=True)
     ref_x = np.concatenate([val_ds[i][0].numpy()[None] for i in range(4)])
     parity = verify_parity(folded, export_onnx(folded, out_dir / "pulsevad_2.1k.onnx"),
                            torch.from_numpy(ref_x))
@@ -333,7 +338,7 @@ def export(seed: int = 0, calib_batches: int = 64):
     # 4) INT8 ONNX parity + C header + int8 artifact
     with torch.no_grad():
         i8_ref = int8_model(torch.from_numpy(ref_x)).numpy()
-    i8_ort = session_logits(out_dir / "pulsevad_2.1k_int8.onnx", ref_x)
+    i8_ort = session_logits(onnx_session(out_dir / "pulsevad_2.1k_int8.onnx"), ref_x)
     onnx_i8_diff = float(np.abs(i8_ref - i8_ort).max())
     print(f"[export] ONNX INT8 vs fake-quant max |diff| {onnx_i8_diff:.4f}", flush=True)
 
