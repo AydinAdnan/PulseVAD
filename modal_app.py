@@ -303,7 +303,7 @@ def export(seed: int = 0, calib_batches: int = 64):
                               generator=gen, num_workers=2)
     int8_model = Int8PulseVAD(folded.dims)
     int8_model.load_state_dict(folded.state_dict())
-    calib = [x for x, _ in list(zip(range(calib_batches), calib_loader))]
+    calib = [xb for _, (xb, _) in zip(range(calib_batches), calib_loader)]
     scales = int8_model.calibrate(calib)
     fake_quant_weights(int8_model, weight_scales(int8_model))
     print(f"[export] calibrated {len(scales)} activation points, "
