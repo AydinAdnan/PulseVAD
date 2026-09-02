@@ -458,7 +458,17 @@ def cache_eval_audio(seed: int = 123, n_eval_windows: int = 2000):
 
 
 # Separate image: silero-vad weights download from GitHub on first use.
-vad_image = image.pip_install("silero-vad")
+# Built from a fresh chain: add_local_python_source must stay last in an image.
+vad_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "git-lfs")
+    .pip_install("torch==2.5.1", "torchaudio==2.5.1", index_url=PYTORCH_CPU)
+    .pip_install(
+        "numpy<2", "scipy", "soundfile", "pyroomacoustics", "tqdm", "onnxruntime",
+        "onnx", "scikit-learn", "torch-pruning>=1.4.0", "silero-vad",
+    )
+    .add_local_python_source("pulsevad")
+)
 
 
 @app.function(image=vad_image, volumes={DATA_ROOT: volume}, timeout=2 * 3600, cpu=4)
