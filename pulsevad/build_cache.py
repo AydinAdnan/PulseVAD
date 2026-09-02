@@ -180,6 +180,7 @@ def build_cache(
     seed: int = 0,
     rir_pool_size: int = 200,
     max_windows_per_file: int | None = None,
+    noise_only_frac: float = 0.10,
 ) -> dict:
     """Two-pass build: count windows from label durations, pre-allocate memmaps,
     fill file-by-file. Returns the manifest describing everything on disk."""
@@ -256,6 +257,15 @@ def build_cache(
 
             windows, win_labels = [], []
             for s0 in starts:
+                if local_rng.random() < noise_only_frac:
+                    # Pure-noise window labeled 0: without these, the model
+                    # never sees noise without speech (silence-window SNR
+                    # mixing zeroes the noise out) and scores pure noise at
+                    # ~0.5 — failing the phase-07 pure-noise FPR < 5% gate.
+                    windows.append(noise_reader.load_window(local_rng))
+                    win_labels.append(0)
+                    cat_counts["noise"] += 1
+                    continue
                 category = draw_category(local_rng)
                 seg = augment_window(
                     wav[s0 : s0 + WINDOW_SAMPLES].astype(np.float32).copy(),

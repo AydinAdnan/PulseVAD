@@ -167,6 +167,7 @@ def test_build_cache_end_to_end(corpus, tmp_path):
     manifest = build_cache(
         speech_dir=speech, labels_dir=labels, noise_dirs=[noise],
         out_dir=out, val_frac=0.0, seed=0, rir_pool_size=2,
+        noise_only_frac=0.0,  # strict MFA-label alignment under test
     )
     feats = np.load(out / "train_features.npy", mmap_mode="r")
     lab = np.load(out / "train_labels.npy")
@@ -215,3 +216,26 @@ def test_build_eval_sets(corpus, tmp_path):
         assert not np.isnan(f).any()
         if cat == "pure_noise":
             assert (l == 0).all(), "pure-noise eval set must be all non-speech"
+
+
+def test_build_cache_noise_only_windows(corpus, tmp_path):
+    """noise_only_frac injects label-0 windows whose content is pure noise —
+    the fix for the phase-07 pure-noise FPR gate (model must reject noise)."""
+    speech, labels, noise = corpus
+    out = tmp_path / "cache"
+    manifest = build_cache(
+        speech_dir=speech, labels_dir=labels, noise_dirs=[noise],
+        out_dir=out, val_frac=0.0, seed=0, rir_pool_size=2,
+        noise_only_frac=0.5,
+    )
+    lab = np.load(out / "train_labels.npy")
+    # half the windows forced to label 0 -> label-0 count far above the
+    # MFA-silence-only count of the frac=0 run
+    strict = build_cache(
+        speech_dir=speech, labels_dir=labels, noise_dirs=[noise],
+        out_dir=tmp_path / "cache0", val_frac=0.0, seed=0, rir_pool_size=2,
+        noise_only_frac=0.0,
+    )
+    lab0 = np.load(tmp_path / "cache0" / "train_labels.npy")
+    assert (lab == 0).sum() > (lab0 == 0).sum()
+    assert (lab == 1).sum() > 0  # speech windows still present
