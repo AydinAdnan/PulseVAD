@@ -370,11 +370,14 @@ def eval_heldout(seed: int = 0):
     """
     import numpy as np
     import torch
+    from torch.utils.data import DataLoader
 
     from pulsevad.eval import evaluate_window_set, report_table
+    from pulsevad.model import PulseVAD
     from pulsevad.prune import build_student
     from pulsevad.quantize import (Int8PulseVAD, fake_quant_weights,
                                    fold_batchnorm, weight_scales)
+    from pulsevad.train import CachedWindows
 
     volume.reload()
     cache = Path(DATA_ROOT) / "cache"
