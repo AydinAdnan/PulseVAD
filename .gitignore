@@ -16,3 +16,6 @@ build/
 .agents/
 data/runs/*
 !data/runs/.gitkeep
+specs/
+*.pdf
+*build_plan*

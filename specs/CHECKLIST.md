@@ -1,63 +1,0 @@
-# PulseVAD: Master Spec-Driven Development Checklist
-
-> **Project Goal:** Build an ultra-tiny, commercially clean, platform-portable Voice Activity Detection (vAD) neural network (2.1k parameters, 2.1 KB INT8, 200 ms latency, 0.850 AUC on AVA-Speech) from scratch.
-
-## Overview of Project Phases
-
-- **Phase 0:** Environment Setup, Dependencies & Legal Footing
-- **Phase 1:** Audio Frontend & Mel Spectrogram Feature Extraction
-- **Phase 2:** CNN Model Architecture & Parameter Verification (81,090 Params)
-- **Phase 3:** Commercially Clean Dataset Ingestion, Silero Self-Labeling & Feature Cache
-- **Phase 4:** Base Model Training & Convergence (0.862 AUC)
-- **Phase 5:** DepGraph Structured Pruning & Self-Distillation (2.1k Params, 0.850 AUC)
-- **Phase 6:** INT8 Post-Training Quantization (PGQ) & Model Export (ONNX / TFLite)
-- **Phase 7:** Strictly Causal Evaluation & Cross-VAD Benchmarking
-- **Phase 8:** Embedded C/C++ Streaming Engine & Hardware Profiling
-
----
-
-## Phase 0: Environment Setup & Legal Footing
-(Reference: [specs/phase-00-environment-and-legal.md](file:///C:/Users/aydin/Desktop/CodeFiles/PulseVAD/specs/phase-00-environment-and-legal.md))
-
-- [x] **0.1 Scaffolding:** Create dictories: `pulsevad`, `data/raw`, `data/labels`, `data/cache`, `tests`, `c_src`.
-- [x] **0.2 Ignore Files:** Setup `.gitignore` to prevent committing binary checkpoints and raw audio.
-- [x] **0.3 Dependencies:** Pin versions in `pyproject.toml`/`uv.lock` via `uv add` (torch, torchaudio, torch-pruning, onnx, onnxruntime, pyroomacoustics, etc.).
-- [x] **0.4 Virtual Environment:** Create `.venv` and install dependencies via `uv` (`uv init`, `uv add`).
-- [x] **0.5 Legal Attribution:** Create `ATTRIBUTION.md` crediting CC BY 4.0 datasets (LibriSpeech, MUSAN, DNS), CC0 Common Voice, and MIT Silero-VAD.
-- [x] **0.6 Non-Commercial Exclusion Check:** Confirm NEVER downloading or training on CC BY-NC-SA 4.0 datasets (LibriVAD, Silero labeled dataset).
-- [x] **Gate 0 Verification:** Run `uv run python tests/test_env.py` and verify all libraries import without errors.
-
----
-
-## Phase 1: Audio Frontend & Mel Spectrogram Extraction
-(Reference: [specs/phase-01-audio-frontend.md](file:///C:/Users/aydin/Desktop/CodeFiles/PulseVAD/specs/phase-01-audio-frontend.md))
-
-- [ ] **1.1 Pre-emphasis Filter:** Implement y[n] = x[n] - 0.97 x[n-1] for 1D tensors.
-- [ ] **1.2 Waveform Znorm:** Implement Zinversion over 3200 samples to make features amplitude-agnostic.
-- [ [ **A.3 STFT MelSpectrogram:** Configure torchaudio MelSpectrogram (rs_ample=16000, n_fft=512, win=400, fmin=0, fmax=8000, 64 bins, power=2.0, center=True).
-- [ ] **1.4 Frame Count Exactness:** Assert frames equals exactly 21 for 3200 samples (200 ms).
-- [ ] **1.5 Log Compression:** Apply \\ln(gMel + 1e-5).
-- [ ] **1.6 Per-Bin Temporal ZNorm:** Normalize each of the 64 bins across 21 time frames.
-- [ ] **1.7 Normalization Order Check:** Confirm order is pre-emphasis -> waveform znorm -> mel -> log -> per-bin znorm.
-- [ ] **Gate 1 Verification:** Run `pytest tests/test_frontend.py` - confirm (4, 64, 21) shape and zuro NaNs.
-
----
-
-## Phase 2: Model Architecture & Parameter Verification
-(Reference: [specs/phase-02-model-architecture.md](file:///C:/Users/aydin/Desktop/CodeFiles/PulseVAD/specs/phase-02-model-architecture.md))
-- [ ] **2.1 Base Modules:** Implement `ConvBNReLU` with `bias=False`, `BatchNorm1d(eps=1e-3, momentum=0.1)`, `activation=ReLU)`.
-- [ ] **2.2 Adapter Layer:** 1Conv (64 -> 128 channels) (8448 params).
-- [ ] **2.3 Depthwise-Separable Conv0:** DW(max_k=11, g=128) -> PW(128 -> 128) (18,048 params).
-- [ ] **2.4 Projection Blocks 1 & 2:** 1Conv 128 -> 64 -> 64 (12,544 params).
-- [ ] **2.5 Residual Block3:** DW(k=17) -> PW -> DW(k=17) -> PW + Skip(1x1) (14,848 params).
-- [ ] **2.6 Dilated Conv4:** Dilated DW(kernel=29, dilation=2, g=64) -> PW(64 -> 128) (10,304 params).
-- [ ] **2.7 Pointwise Conv5:** 14Conv (128 -> 128) (16,640 params).
-- [ ] **2.8 Global Average Pooling:** Pool over 21 time frames (0 params).
-- [ ] **2.9 Classifier Head:** Linear(128 -> 2, bias=True) (258 params).
-- [ ] **Gate 2 Verification:** Run `pytest tests/test_model.py` - assert total parameter count is exactly **81,090**.
-
----
-
-## Phase 3: Dataset Ingestion & Self-Labeling
-(Reference: [specs/phase-03-dataset-and-pipeline.md](file:///C:/Users/aydin/Desktop/CodeFiles/PulseVAD/specs/phase-03-dataset-and-pipeline.md))
-- [ ] **3.1 Download Script:** Implement downloaders for LibriSpeech��Ʌ��������������5UM8������9L����������9��͔�(��l�t���̸ȁM���ɼ�1�������������訨�Iո�5%P������͕��M���ɼ�Y�ݥѠ����ѕɕͥ̀�����������Ԥ��������Ʌѥ�������̼����̰��������̸(��l�t���(�̀���́I��ѕɥ�ѥ��訨�5����������͕�����́Ѽ����́�Ʌ�����������̸(��l�t���̸ЁM9H�5�᥹�������訨�M�������������������͔����ɝ��́Ѽ��ᅍЁM9H��������԰����԰�������ͥ���I5L��������Ѡ�(��l�t���̸ԁI����I�ٕɈ���ѕ�訨�����A�I�������ѥ�́I%H����ٽ��ѥ���Ѽ�������������ͅ����̸(��l�t�����؁]����9��͔�M��ձ�ѽ�訨����Ʌє���ѡ�ѥ����ə��܁���͔��Ѐ�ԁ��M9H�(��l�t���̸܁Aɕ�����ѕ������訨�Aɕ�����є�����ٔͅ������ɔ�ѕ�ͽ�̀�ذ��а��Ĥ����������́Ѽ���ͬ�(��l�t����є�́Y�ɥ����ѥ��訨�Iո����ѕ�Ёѕ��̽ѕ��}��х͕й�倀�������ɴ�������م�����䁅���E���չ�������е�����̸((���((���A��͔���	�͔�5�����QɅ����������ٕɝ����(�I���ɕ����m����̽���͔��е��͔��Ʌ��������t�����輼��U͕�̽�呥���ͭѽ��������̽Aձ͕Y�����̽���͔��е��͔��Ʌ����������(��l�t�����ā=�ѥ���ȁM����訨�%��ѥ���锁M�ݥѠ�������մ���䰁9��ѕɽ��Q�Ք��ݕ����}��������Ք�и(��l�t���иȁ危���1H�M����ձ��訨�%�������Ѐе������݅ɵ�����ص���������ѕ�ԁ�Ѐ̸Ք�̰������������ͥ�������䁑�ݸ�Ѽ�Ŕ�Ը(��l�t���и́1��́չ�ѥ��訨�ɽ����ɽ��1��́ݥѠ������}͵��ѡ��������(��l�t���иЁQɅ������ᕍ�ѥ��訨�QɅ�����������́�Ё��э�}ͥ����ȁݥѠ����������Ё�Ʌ������(��l�t���иԁI��ɕ�ͥ���ٽ������訨�M�ٔ������}�������ѡ��ݥѠ�������Ёم����ѥ���U�(��l�t����є�ЁY�ɥ����ѥ��訨�����ٔ������U�ݥѡ�����������ԁ���ѡ������ȝ̀����ȁ������ͅ��Y�M������((���((���A��͔���M��Ս��ɕ��A�չ������M������ѥ���ѥ��(�I���ɕ����m����̽���͔��Ե���Ս��ɕ����չ�����������ѥ���ѥ�����t�����輼��U͕�̽�呥���ͭѽ��������̽Aձ͕Y�����̽���͔��Ե���Ս��ɕ����չ�����������ѥ���ѥ�������(��l�t���Ըā��Ʌ���	ե����訨�%��х�ѥ�є��ѽɍ�}��չ�������������Ʌ��������Aձ͕Y����Ѽ��ٽ����ɽ����ѕ�ͽȁ͡���̸(��l�t���ԸȁA�ȵ1��ȁA�չ����I�ѥ��訨�����ѡ������ȝ́�Չ��͡���Ʌѥ��ٕ�ѽȁѼ���չ��Ѽ��Ȱ������Ʌ��ѕ�̸(��l�t���Ը́Q�����ȁɕ�饹�訨�1���������}�������ѡ���͕ЁѼ��م����������ɕ�锁�����Ʌ�����̸(��l�t���ԸЁM������ѥ���ѥ���1���訨������չ����չ�����Ց��Ё��Ȁ�������́�ͥ�������̀��-0����ɝ������ѕ���Ʌ��ɔ�ȸ�����������Ԥ�(��l�t����є�ԁY�ɥ����ѥ��訨�A�չ�����������́�Ȱ������Ʌ��ѕ�̀��Ѭ�5̤�����ɕ��ٕ�́Ѽ���U�������̨�����Y�M������((���((���A��͔���EՅ�ѥ�ѥ�����5����������(�I���ɕ����m����̽���͔��ص�Յ�ѥ�ѥ������������й��t�����輼��U͕�̽�呥���ͭѽ��������̽Aձ͕Y�����̽���͔��ص�Յ�ѥ�ѥ������������й����(��l�t���ظā	�э�9�ɴ�������訨�����	�э�9�ɴŐ�ݕ����́�������͕́��Ѽ����Ő�����̸(��l�t���ظȁ%9P��AQD訨������嵵��ɥ��%5P��I�չ��Q��9��ɕ�Ё�Յ�ѥ�ѥ���Ѽ�ݕ����̀�ȸā-������䤸(��l�t���ظ́=99`������訨�����Ё�хѥ��=99`��Ʌ�������͕�}ٕ�ͥ����݀������ٕɥ��ݥѠ������չѥ���(��l�t���ظЁQ1�є����!��������ٕ�ЁѼ�Q1�є����щՙ��ȁ��������Ʌє���ձ͕م�}ݕ����̹���(��l�t����є�؁Y�ɥ����ѥ��訨�%9P����������э��́@�ȁU�ݥѠ�����������Ʌ�䁑ɽ��=99`���э��́A�Q�ɍ��������́Ѽ�Ŕ�и((���((���A��͔�����ͅ��م�Յѥ�����ɽ�̵Y�	������ɭ���(�I���ɕ����m����̽���͔��ܵ���ͅ���م�Յѥ��������������ɭ������t�����輼��U͕�̽�呥���ͭѽ��������̽Aձ͕Y�����̽���͔��ܵ���ͅ���م�Յѥ��������������ɭ��������(��l�t���(�āM�ɥ�ѱ���ͅ��Iչ���訨�%�������Ё�����ٕɱ������������́�م�Յѥ���ݥѡ��Ё͵��ѡ�����ȁ����������(��l�t���ܸȁY�M������	������ɬ訨�����є�I=��U�����Ёİ�����AH� �QAH����Ը(��l�t���ܸ́9����M����́M�����訨�Y�ɥ����ə�ɵ�������ɽ�́������]���䰁9L�M�ѡ�ѥ�������9L�A�ɔ�9��͔�(��l�t���ܸЁɽ�̵Y�����ɥͽ��Q����訨����Ʌє��ձ��х���������ɥ���Aձ͕Y�������ЁM���ɼ���ɕI����5�ɉ��9�а�����ѽ���Y�(��l�t����є�܁Y�ɥ����ѥ��訨�I����Ё�����յ���́ݥѠ��Ԕ�$��ٕȀ̬�͕��́��������ɱ��хє��م�Յѥ����ɽѽ���̸(���((���A��͔���������������M�ɕ�����������(�I���ɕ����m����̽���͔��ൕ�������������嵕�й��t�����輼��U͕�̽�呥���ͭѽ��������̽Aձ͕Y�����̽���͔��ൕ�������������嵕�й����(��l�t����ā�ɍձ�ȁI���	ՙ���訨�%�������Ѐ�����̀�����ͅ����̤���ɍձ�ȁ�ՙ��ȁ�����ɔ��(��l�t����ȁ�ᕐ�A���ЁM@�ɽ�ѕ��訨�%�������Ё�ɔ������̰ͥ�i��ɴ����ȵ��а������е�������́����(��l�t����́%9P��Q��ͽȁ%���ɕ���訨�%�������Ё�����ݕ���Ё���Ő���I�1T���@������ͥ���ȁ����(��l�t����Ё1�ѕ��䀘�IQ�Aɽ������訨�5����ɔ�݅�����������ѕ��䁽ٕȀ�����������ɕ���̀����������䤸(��l�t����є���Y�ɥ����ѥ��訨����ɕ����������ɕ�����ᕍ�ѕ́չ��Ȁā�́��Ȁ�����́����ͥ����IQ�������Ԥ�ݥѠ��ɼ������䁱���̸(
