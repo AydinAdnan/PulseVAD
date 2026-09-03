@@ -8,11 +8,27 @@ an ultra-compact, commercially clean voice activity detector built from scratch,
 
 ---
 
-## installation
+## installation & quickstart
 
-### pip / uv
 ```bash
-# coming soon
+pip install pulsevad
+# or with uv:
+uv add pulsevad
+```
+
+```python
+from pulsevad import load_pulsevad, read_audio, get_speech_timestamps
+
+# 1. load pre-trained 2.1k INT8 model (or onnx=False for TorchScript JIT)
+model = load_pulsevad(onnx=True, quantized=True)
+
+# 2. read and resample any audio file
+wav = read_audio("speech.wav", sampling_rate=16000)
+
+# 3. extract speech segments
+timestamps = get_speech_timestamps(wav, model, threshold=0.5)
+for seg in timestamps:
+    print(f"speech: {seg['start'] / 16000:.2f}s -> {seg['end'] / 16000:.2f}s")
 ```
 
 to run or reproduce the training, pruning, and cloud evaluation pipeline on Modal yourself, see [REPRODUCE.md](REPRODUCE.md).
