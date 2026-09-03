@@ -19,3 +19,6 @@ data/runs/*
 specs/
 *.pdf
 *build_plan*
+!pulsevad/data/*
+!pulsevad/data/**
+
