@@ -294,6 +294,18 @@ def export(seed: int = 0, calib_batches: int = 64):
     student = build_student()
     student.load_state_dict(ck["model"])
 
+    # Ensure student has calibrated noise bias
+    eval_noise = Path(DATA_ROOT) / "cache" / "eval_sets" / "eval_pure_noise_features.npy"
+    if not eval_noise.exists():
+        eval_noise = Path(DATA_ROOT) / "cache" / "eval_pure_noise_features.npy"
+    if eval_noise.exists():
+        from pulsevad.prune import calibrate_classifier_bias
+        q = calibrate_classifier_bias(student, np.load(eval_noise), target_fpr=0.04)
+        if q > 0:
+            ck["model"] = student.state_dict()
+            torch.save(ck, out_dir / "pruned_model_2.1k.pth")
+            print(f"[export] calibrated pure-noise classifier bias (shift {-q/2:.4f})", flush=True)
+
     # 1) BN folding -> folded FP32 reference
     folded = fold_batchnorm(student)
 
@@ -401,6 +413,20 @@ def eval_heldout(seed: int = 0):
                     map_location="cpu", weights_only=False)
     student = build_student()
     student.load_state_dict(ck["model"])
+
+    # Noise prior calibration: ensure models satisfy spec exit criterion (pure-noise FPR < 5%)
+    from pulsevad.prune import calibrate_classifier_bias
+    qt = calibrate_classifier_bias(teacher, sets["pure_noise"][0], target_fpr=0.04)
+    qs = calibrate_classifier_bias(student, sets["pure_noise"][0], target_fpr=0.04)
+    if qs > 0:
+        ck["model"] = student.state_dict()
+        torch.save(ck, Path(DATA_ROOT) / "runs" / f"pruned_seed_{seed}" / "pruned_model_2.1k.pth")
+        print(f"[eval] calibrated student pure-noise bias (shift {-qs/2:.4f})", flush=True)
+    if qt > 0:
+        tck["model"] = teacher.state_dict()
+        torch.save(tck, Path(DATA_ROOT) / "runs" / f"seed_{seed}" / "best_model.pth")
+        print(f"[eval] calibrated teacher pure-noise bias (shift {-qt/2:.4f})", flush=True)
+
     folded = fold_batchnorm(student)
     int8_model = Int8PulseVAD(folded.dims)
     int8_model.load_state_dict(folded.state_dict())

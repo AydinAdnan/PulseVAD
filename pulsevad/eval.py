@@ -121,11 +121,15 @@ def report_table(per_model: dict[str, dict[str, dict]]) -> str:
     sep = " | ".join(["---"] * (len(cats) + 1))
     rows = []
     for name, cats_m in per_model.items():
-        cells = " | ".join(
-            f"AUC {cats_m[c]['auc']:.3f} FPR@95 {cats_m[c]['fpr_at_tpr95']:.3f}"
-            if c in cats_m else "—" for c in cats
-        )
-        rows.append(f"**{name}** | {cells}")
+        cells = []
+        for c in cats:
+            if c not in cats_m:
+                cells.append("—")
+            elif cats_m[c].get("auc") is None:
+                cells.append(f"FPR@95 {cats_m[c]['fpr_at_tpr95']:.3f}")
+            else:
+                cells.append(f"AUC {cats_m[c]['auc']:.3f} FPR@95 {cats_m[c]['fpr_at_tpr95']:.3f}")
+        rows.append(f"**{name}** | {' | '.join(cells)}")
     return "\n".join([f"| {cols} |", f"| {sep} |"] + [f"| {r} |" for r in rows])
 
 
@@ -216,10 +220,19 @@ def build_comparison(ours_measured: dict, ours: dict | None = None,
                          if isinstance(next(iter(ours_measured.values()))[k], dict))) + " |",
               "|---|" + "---|" * 5]
     for name, row in ours_measured.items():
-        cells = " | ".join(
-            f"{row[c]['auc']:.3f}" if isinstance(row.get(c), dict) else str(row.get(c, "—"))
-            for c in sorted(k for k in row if isinstance(row.get(k), dict)))
-        lines.append(f"| **{name}** | {cells} |")
+        cells = []
+        for c in sorted(k for k in row if isinstance(row.get(k), dict)):
+            val = row[c]
+            if isinstance(val, dict):
+                if val.get("auc") is not None:
+                    cells.append(f"{val['auc']:.3f}")
+                elif val.get("fpr_at_tpr95") is not None:
+                    cells.append(f"FPR {val['fpr_at_tpr95']:.3f}")
+                else:
+                    cells.append("—")
+            else:
+                cells.append(str(val))
+        lines.append(f"| **{name}** | {' | '.join(cells)} |")
     lines.append("")
 
     # ---- where we win / lose, computed per cited competitor
