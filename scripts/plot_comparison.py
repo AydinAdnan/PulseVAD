@@ -81,5 +81,49 @@ def main():
     plt.savefig(out_img, dpi=300, bbox_inches="tight")
     print(f"Comparison graph saved to: {out_img}")
 
+    # 3. Multilingual Benchmark Graph
+    multi_json = root / "data" / "runs" / "pruned_seed_0" / "multilingual_report.json"
+    if multi_json.exists():
+        mdata = json.loads(multi_json.read_text())["report"]
+        langs = list(mdata.keys())
+        pulse_i8 = [mdata[l]["PulseVAD Ship INT8 (2.1k)"]["auc"] for l in langs]
+        pulse_tea = [mdata[l]["PulseVAD Teacher (81k)"]["auc"] for l in langs]
+        silero_v5 = [mdata[l]["Silero-VAD v5 (545k)"]["auc"] for l in langs]
+
+        # Append Macro Average
+        langs.append("Macro Average")
+        pulse_i8.append(float(np.mean(pulse_i8)))
+        pulse_tea.append(float(np.mean(pulse_tea)))
+        silero_v5.append(float(np.mean(silero_v5)))
+
+        fig_m, ax_m = plt.subplots(figsize=(14, 5.5), dpi=300)
+        xm = np.arange(len(langs))
+        w = 0.26
+        r1 = ax_m.bar(xm - w, pulse_i8, w, label="PulseVAD 2.1k INT8", color="#059669", alpha=0.9, edgecolor="black", linewidth=0.5)
+        r2 = ax_m.bar(xm, pulse_tea, w, label="PulseVAD 81k Teacher", color="#2563eb", alpha=0.9, edgecolor="black", linewidth=0.5)
+        r3 = ax_m.bar(xm + w, silero_v5, w, label="Silero-VAD v5 (545k)", color="#dc2626", alpha=0.9, edgecolor="black", linewidth=0.5)
+
+        for rects in [r1, r2, r3]:
+            for r in rects:
+                h = r.get_height()
+                ax_m.annotate(f"{h:.2f}",
+                              xy=(r.get_x() + r.get_width() / 2, h),
+                              xytext=(0, 2), textcoords="offset points",
+                              ha='center', va='bottom', fontsize=7, rotation=45)
+
+        ax_m.set_ylabel("AUC-ROC (Higher is Better)", fontsize=11, fontweight="bold")
+        ax_m.set_title("Multilingual Benchmark Across 10 Languages (FLEURS + Noise)\nIncluding Indian Languages (Hindi, Tamil, Telugu, Bengali)", fontsize=12, fontweight="bold")
+        ax_m.set_xticks(xm)
+        ax_m.set_xticklabels(langs, fontsize=9.5, fontweight="bold", rotation=25, ha="right")
+        ax_m.set_ylim(0.65, 1.02)
+        ax_m.axvline(x=len(langs) - 1.5, color="gray", linestyle="--", alpha=0.7, label="_nolegend_")
+        ax_m.legend(loc="lower left", fontsize=9.5, framealpha=0.9)
+        ax_m.grid(True, linestyle="--", alpha=0.6)
+
+        plt.tight_layout()
+        out_m_img = root / "data" / "runs" / "pruned_seed_0" / "multilingual_graph.png"
+        plt.savefig(out_m_img, dpi=300, bbox_inches="tight")
+        print(f"Multilingual graph saved to: {out_m_img}")
+
 if __name__ == "__main__":
     main()
