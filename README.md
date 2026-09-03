@@ -1,8 +1,8 @@
-# pulsevad
+# PulseVAD
 
-2,118 parameters. 2.1 KB as INT8. strictly causal. zero future context. runs on microcontrollers that choke on silero.
+2,118 parameters. 2.1 KB as INT8. strictly causal. zero future context. runs on microcontrollers that choke on Silero.
 
-an ultra-compact, commercially clean voice activity detector built from scratch, inspired by the kiloVAD architecture in [arXiv:2607.25870v1](https://arxiv.org/abs/2607.25870) (*"VAD to the Bone: Ultra-Tiny Speech Activity Detection for Edge Deployment"*, INTERSPEECH 2026).
+An ultra-compact, commercially clean voice activity detector built from scratch, inspired by the kiloVAD architecture in [arXiv:2607.25870v1](https://arxiv.org/abs/2607.25870) (*"VAD to the Bone: Ultra-Tiny Speech Activity Detection for Edge Deployment"*, INTERSPEECH 2026).
 
 ![benchmarks](docs/assets/comparison_graph.png)
 
@@ -31,38 +31,38 @@ for seg in timestamps:
     print(f"speech: {seg['start'] / 16000:.2f}s -> {seg['end'] / 16000:.2f}s")
 ```
 
-to run or reproduce the training, pruning, and cloud evaluation pipeline on Modal yourself, see [REPRODUCE.md](REPRODUCE.md).
+To run or reproduce the training, pruning, and cloud evaluation pipeline on Modal yourself, see [REPRODUCE.md](REPRODUCE.md).
 
 ---
 
-## what this actually is
+## What this actually is
 
-if you've ever tried running a modern deep learning voice activity detector on a real embedded target (think an ARM Cortex-M0+ or M4 with 32 KB of RAM), you know the options suck. silero is fantastic for servers and desktop apps, but it weighs 545,000 parameters (~2.2 MB) and demands millions of MACs per inference. other tiny models in academic papers either rely on non-causal lookahead (cheating by looking 600 ms into the future), require exotic activation functions that don't exist in CMSIS-NN, or use non-commercial research licenses.
+If you've ever tried running a modern deep learning voice activity detector on a real embedded target (think an ARM Cortex-M0+ or M4 with 32 KB of RAM), you know the options suck. Silero is fantastic for servers and desktop apps, but it weighs 545,000 parameters (~2.2 MB) and demands millions of MACs per inference. Other tiny models in academic papers either rely on non-causal lookahead (cheating by looking 600 ms into the future), require exotic activation functions that don't exist in CMSIS-NN, or use non-commercial research licenses.
 
-pulsevad takes raw 16 kHz mono audio, computes a 64-channel log-mel spectrogram over a 200 ms causal window, and runs a depthwise-separable 1D CNN pruned down to **2,118 parameters**. 
+Pulsevad takes raw 16 kHz mono audio, computes a 64-channel log-mel spectrogram over a 200 ms causal window, and runs a depthwise-separable 1D CNN pruned down to **2,118 parameters**. 
 
-quantized with round-to-nearest INT8, the entire weight payload is **2.1 KB**. it ships as a single drop-in C header (`pulsevad_weights.h`) and standard ONNX graphs.
+Quantized with round-to-nearest INT8, the entire weight payload is **2.1 KB**. It ships as a single drop-in C header (`pulsevad_weights.h`) and standard ONNX graphs.
 
 ---
 
-## why building this was hell (and how it actually works)
+## How it actually works
 
-you cannot train a 2,118 parameter network from scratch on noisy audio. it gets stuck in terrible local minima and predicts pure noise 100% of the time.
+You cannot train a 2,118 parameter network from scratch on noisy audio. It gets stuck in terrible local minima and predicts pure noise 100% of the time.
 
-here is how we got it to work:
+Here is how we got it to work:
 
-1. **the 81k teacher**: we first trained an 81,090-parameter CNN backbone on LibriSpeech augmented with synthetic room impulse responses (pyroomacoustics), synthetic wind profiles, and heavy background noise from MUSAN at -10 dB to +10 dB SNR.
-2. **commercially clean self-labeling**: instead of using non-commercial academic labels (like LibriVAD or AVA CC-BY-NC splits), we labeled 28,539 LibriSpeech files using Silero-VAD under an MIT license, using a 0.50/0.35 hysteresis state machine quantized to a strict 10 ms grid. 100% permissive commercial data only.
+1. **The 81k teacher**: we first trained an 81,090-parameter CNN backbone on LibriSpeech augmented with synthetic room impulse responses (pyroomacoustics), synthetic wind profiles, and heavy background noise from MUSAN at -10 dB to +10 dB SNR.
+2. **Commercially clean self-labeling**: instead of using non-commercial academic labels (like LibriVAD or AVA CC-BY-NC splits), we labeled 28,539 LibriSpeech files using Silero-VAD under an MIT license, using a 0.50/0.35 hysteresis state machine quantized to a strict 10 ms grid. 100% permissive commercial data only.
 3. **DepGraph structured pruning**: uniform pruning collapses at sub-3k params. we used dependency-graph magnitude pruning to identify coupled channel dependencies across depthwise and pointwise layers, carving out the exact 2.1k channel spec.
-4. **knowledge distillation**: we fine-tuned the 2.1k student under the frozen 81k teacher using KL divergence with temperature scaling and cosine learning rate decay.
-5. **the silent bias trap**: LibriSpeech is ~78% active speech. a distilled model naturally inherits a positive prior (+1.4 logit shift), which causes it to trigger on pure air conditioning noise (yielding a disastrous 25% false positive rate on pure noise). we implemented quantile-based prior bias calibration to shift the linear classifier bias, crushing pure-noise FPR to **3.5%** while keeping ROC-AUC strictly invariant.
-6. **post-training quantization (PTQ)**: batchnorm layers were mathematically folded into conv weights before calibration. using symmetric per-channel weight scaling and per-tensor activation scaling, the AUC gap between FP32 and INT8 is under **0.001**.
+4. **Knowledge distillation**: we fine-tuned the 2.1k student under the frozen 81k teacher using KL divergence with temperature scaling and cosine learning rate decay.
+5. **The silent bias trap**: LibriSpeech is ~78% active speech. a distilled model naturally inherits a positive prior (+1.4 logit shift), which causes it to trigger on pure air conditioning noise (yielding a disastrous 25% false positive rate on pure noise). we implemented quantile-based prior bias calibration to shift the linear classifier bias, crushing pure-noise FPR to **3.5%** while keeping ROC-AUC strictly invariant.
+6. **Post-training quantization (PTQ)**: batchnorm layers were mathematically folded into conv weights before calibration. using symmetric per-channel weight scaling and per-tensor activation scaling, the AUC gap between FP32 and INT8 is under **0.001**.
 
 ---
 
-## cross-vad benchmark: size, compute & latency
+## Benchmark: size, compute & latency
 
-we benchmarked pulsevad against standard embedded baselines and measured silero-vad v5 on identical causal 200 ms audio chunks:
+We benchmarked pulsevad against standard embedded baselines and measured silero-vad v5 on identical causal 200 ms audio chunks:
 
 | model | params | footprint | MACs / 200 ms | input latency | commercial license |
 | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -77,9 +77,9 @@ we benchmarked pulsevad against standard embedded baselines and measured silero-
 
 ---
 
-## acoustic evaluation: measured AUC on held-out test sets
+## Acoustic evaluation: measured AUC on held-out test sets
 
-evaluated causally with 0% overlap across 2,000 audio windows per category on the exact same audio:
+Evaluated causally with 0% overlap across 2,000 audio windows per category on the exact same audio:
 
 | category | PulseVAD 2.1k INT8 | PulseVAD 2.1k FP32 | PulseVAD 81k Teacher | Silero-VAD v6 (measured) | Silero-VAD v5 (measured) | MarbleNet (measured) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -93,9 +93,9 @@ evaluated causally with 0% overlap across 2,000 audio windows per category on th
 
 ---
 
-## multilingual & indian language benchmark
+## Multilingual & Indian language benchmark
 
-we tested generalization on in-the-wild speech across 10 diverse languages from Google FLEURS mixed with realistic MUSAN noise at 0 to 20 dB SNR. this includes 4 major Indian languages (Hindi, Tamil, Telugu, Bengali):
+We tested generalization on in-the-wild speech across 10 diverse languages from Google FLEURS mixed with realistic MUSAN noise at 0 to 20 dB SNR. this includes 4 major Indian languages (Hindi, Tamil, Telugu, Bengali):
 
 ![multilingual](docs/assets/multilingual_graph.png)
 
@@ -117,29 +117,29 @@ in noisy speech conditions, pulsevad's mel frontend and dilated convolutions bea
 
 ---
 
-## real talk: advantages vs disadvantages
+## Real talk: advantages vs disadvantages
 
-no model is magic. here is the honest breakdown of when you should use pulsevad and when you should not.
+No model is magic. here is the honest breakdown of when you should use pulsevad and when you should not.
 
-### advantages
-- **runs anywhere**: 2.1 KB fits in L1 cache or tiny MCU SRAM without external DRAM.
-- **zero dependencies**: pure C array weights (`pulsevad_weights.h`) or standard ONNX. no PyTorch, no heavy runtime, no recurrent state tensors to track.
-- **tough on noise**: holds up remarkably well against wind, reverberation, and babble noise because it was trained with aggressive augmentations.
+### Advantages
+- **Runs anywhere**: 2.1 KB fits in L1 cache or tiny MCU SRAM without external DRAM.
+- **Zero dependencies**: pure C array weights (`pulsevad_weights.h`) or standard ONNX. no PyTorch, no heavy runtime, no recurrent state tensors to track.
+- **Tough on noise**: holds up remarkably well against wind, reverberation, and babble noise because it was trained with aggressive augmentations.
 - **100% commercially permissive**: clean MIT license with no non-commercial viral traps.
-- **strictly causal**: 0 ms lookahead. what happens in the future stays in the future.
+- **Strictly causal**: 0 ms lookahead. what happens in the future stays in the future.
 
-### disadvantages
+### Disadvantages
 - **200 ms window granularity**: silero streams in 32 ms sub-chunks. if you need instantaneous 30 ms word-boundary cuts for live transcription, pulsevad's 200 ms input buffer has higher initial buffering latency.
-- **clean speech ceiling**: on pristine studio speech with zero background noise, silero's hundreds of thousands of parameters give it a higher ceiling (0.988–0.990 vs 0.976 AUC).
-- **requires mel frontend**: pulsevad expects 64 log-mel bins. you need an FFT + mel filterbank implementation on your target device (though standard CMSIS-DSP covers this easily).
+- **Clean speech ceiling**: on pristine studio speech with zero background noise, silero's hundreds of thousands of parameters give it a higher ceiling (0.988–0.990 vs 0.976 AUC).
+- **Requires mel frontend**: pulsevad expects 64 log-mel bins. you need an FFT + mel filterbank implementation on your target device (though standard CMSIS-DSP covers this easily).
 
-### head-to-head: vs marblenet & silero (v5 vs v6)
+### Head-to-head: vs MarbleNet & Silero (v5 vs v6)
 - **vs MarbleNet (91k params)**: MarbleNet was NVIDIA's lightweight VAD for NeMo. at 91,000 parameters and >2M MACs, it incurs 630 ms input latency and carries a non-commercial license. PulseVAD 2.1k is **43x smaller**, **3.1x lower latency**, and beats MarbleNet on clean speech (**0.976 vs 0.970 AUC**) and windy audio (**0.938 vs 0.910 AUC**).
 - **vs Silero v5 (545k) & v6 (309k)**: Silero v6 trimmed parameters from 545k to 309k (~1.2 MB). while both Silero versions excel on clean studio audio (0.988–0.990 AUC), PulseVAD 2.1k INT8 beats Silero v6 on windy audio (**0.938 vs 0.934**) and DNS synthetic noise (**0.891 vs 0.873**) while being **145x smaller** than v6 and **257x smaller** than v5.
 
 ---
 
-## under the hood
+## Under the hood
 
 ```
 16 kHz mono audio (3,200 samples = 200 ms)
@@ -171,7 +171,7 @@ no model is magic. here is the honest breakdown of when you should use pulsevad 
 
 ---
 
-## references & attribution
+## References & attribution
 
 - **kiloVAD Paper**: Stephen Bauer, Sheila Seidel, Shanza Iftikhar, Scott Veidenheimer, Gorkem Ulkar. *"VAD to the Bone: Ultra-Tiny Speech Activity Detection for Edge Deployment"*, [arXiv:2607.25870v1](https://arxiv.org/abs/2607.25870), INTERSPEECH 2026. (inspiration for ultra-tiny CNN VAD and structural pruning targets).
 - **Silero-VAD**: [snakers4/silero-vad](https://github.com/snakers4/silero-vad) (MIT License) used as the teacher state-machine labeling tool and evaluation baseline.
@@ -181,6 +181,6 @@ no model is magic. here is the honest breakdown of when you should use pulsevad 
 
 ---
 
-## license
+## License
 
 MIT License. see [LICENSE](LICENSE) for details.
