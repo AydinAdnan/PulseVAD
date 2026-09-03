@@ -509,9 +509,16 @@ def eval_competitors(seed: int = 123):
 
     uv run modal run modal_app.py::eval_competitors
     """
+    import io
+    import json
+    import time
+    import urllib.request
+    from pathlib import Path
     import numpy as np
+    import scipy.special
     import torch
-    from silero_vad import load_silero_vad
+    import torchaudio
+    import onnxruntime as ort
 
     from pulsevad.eval import causal_metrics
 
@@ -519,33 +526,12 @@ def eval_competitors(seed: int = 123):
     eval_dir = Path(DATA_ROOT) / "cache" / "eval_sets"
     cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
 
-    # If running concurrently with cache_eval_audio, wait for audio arrays to land
-    import time
     for _ in range(60):
         if (eval_dir / "eval_clean_audio.npy").exists():
             break
-        print("[silero] waiting for eval audio files from cache_eval_audio...", flush=True)
+        print("[competitors] waiting for eval audio files from cache_eval_audio...", flush=True)
         time.sleep(5)
         volume.reload()
-
-    model = load_silero_vad()
-    silero_results = {}
-    for cat in cats:
-        audio = np.load(eval_dir / f"eval_{cat}_audio.npy")  # (N, 3200) float32
-        labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
-        probs = np.empty(len(audio))
-        with torch.no_grad():
-            for i, win in enumerate(audio):
-                # Silero v5 streams in 512-sample (32 ms) chunks; a 200 ms
-                # window score = mean over its 6 causal sub-chunks only.
-                model.reset_states()
-                sub_probs = []
-                for k in range(0, 3200 - 512 + 1, 512):
-                    chunk = torch.from_numpy(win[k : k + 512]).unsqueeze(0)
-                    sub_probs.append(model(chunk, 16000).item())
-                probs[i] = float(np.mean(sub_probs))
-        silero_results[cat] = causal_metrics(labels, probs)
-        print(f"[silero:{cat}] {silero_results[cat]}", flush=True)
 
     out_file = Path(DATA_ROOT) / "runs" / "pruned_seed_0" / "competitor_report.json"
     full_report = {}
@@ -554,9 +540,91 @@ def eval_competitors(seed: int = 123):
             full_report = json.loads(out_file.read_text())
         except Exception:
             pass
-    full_report["Silero-VAD v5 (measured, same windows)"] = silero_results
+
+    # 1. Silero v5.1.2
+    print("[competitors] Loading Silero-VAD v5 (v5.1.2)...", flush=True)
+    req5 = urllib.request.Request(
+        "https://raw.githubusercontent.com/snakers4/silero-vad/v5.1.2/src/silero_vad/data/silero_vad.jit",
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
+    v5_bytes = urllib.request.urlopen(req5).read()
+    model_v5 = torch.jit.load(io.BytesIO(v5_bytes))
+    model_v5.eval()
+
+    # 2. Silero v6.2.1
+    print("[competitors] Loading Silero-VAD v6 (v6.2.1)...", flush=True)
+    req6 = urllib.request.Request(
+        "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/src/silero_vad/data/silero_vad.jit",
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
+    v6_bytes = urllib.request.urlopen(req6).read()
+    model_v6 = torch.jit.load(io.BytesIO(v6_bytes))
+    model_v6.eval()
+
+    # 3. MarbleNet ONNX (91k)
+    print("[competitors] Loading MarbleNet ONNX (91k)...", flush=True)
+    req_m = urllib.request.Request(
+        "https://huggingface.co/TigreGotico/frame-vad-marblenet-onnx/resolve/main/marblenet.onnx",
+        headers={"User-Agent": "Mozilla/5.0"}
+    )
+    mnet_bytes = urllib.request.urlopen(req_m).read()
+    mnet_sess = ort.InferenceSession(mnet_bytes)
+    mnet_mel_fn = torchaudio.transforms.MelSpectrogram(
+        sample_rate=16000, n_fft=512, win_length=400, hop_length=160, n_mels=80
+    )
+
+    def score_silero(m, audio):
+        probs = np.empty(len(audio), dtype=np.float32)
+        with torch.no_grad():
+            for i, win in enumerate(audio):
+                m.reset_states()
+                sub = []
+                for k in range(0, 3200 - 512 + 1, 512):
+                    chunk = torch.from_numpy(win[k : k + 512]).unsqueeze(0)
+                    sub.append(m(chunk, 16000).item())
+                probs[i] = float(np.mean(sub))
+        return probs
+
+    def score_marblenet(sess, mel_fn, audio, batch_size=256):
+        probs_list = []
+        for i in range(0, len(audio), batch_size):
+            chunk = torch.from_numpy(audio[i : i + batch_size])
+            mel = torch.log(mel_fn(chunk) + 1e-5).numpy().astype(np.float32)
+            logits = sess.run(None, {"audio_signal": mel})[0]
+            p = scipy.special.softmax(logits, axis=-1)[:, :, 1].mean(axis=-1)
+            probs_list.append(p)
+        return np.concatenate(probs_list)
+
+    v5_results = {}
+    v6_results = {}
+    mnet_results = {}
+
+    for cat in cats:
+        audio = np.load(eval_dir / f"eval_{cat}_audio.npy")
+        labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
+
+        # Silero v5
+        p5 = score_silero(model_v5, audio)
+        v5_results[cat] = causal_metrics(labels, p5)
+        print(f"[silero_v5:{cat}] {v5_results[cat]}", flush=True)
+
+        # Silero v6
+        p6 = score_silero(model_v6, audio)
+        v6_results[cat] = causal_metrics(labels, p6)
+        print(f"[silero_v6:{cat}] {v6_results[cat]}", flush=True)
+
+        # MarbleNet
+        pm = score_marblenet(mnet_sess, mnet_mel_fn, audio)
+        mnet_results[cat] = causal_metrics(labels, pm)
+        print(f"[marblenet:{cat}] {mnet_results[cat]}", flush=True)
+
+    full_report["Silero-VAD v5 (measured, same windows)"] = v5_results
+    full_report["Silero-VAD v6 (measured, same windows)"] = v6_results
+    full_report["MarbleNet (measured, same windows)"] = mnet_results
+
     out_file.write_text(json.dumps(full_report, indent=2))
     volume.commit()
+    print("[competitors] Done scoring all competitors!", flush=True)
     return full_report
 
 
