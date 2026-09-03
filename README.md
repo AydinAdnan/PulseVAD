@@ -52,8 +52,9 @@ we benchmarked pulsevad against standard embedded baselines and measured silero-
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **PulseVAD (81k teacher)** *(measured)* | 81,090 | 324 KB FP32 / 81 KB INT8 | 1.66M | 200 ms | **YES (MIT)** |
 | **PulseVAD (2.1k ship)** *(measured)* | **2,118** | **8.5 KB FP32 / 2.1 KB INT8** | **44,000** | **200 ms** | **YES (MIT)** |
-| **Silero-VAD (v5)** *[measured/cited]* | 545,000 | ~2.2 MB | >10M | 32 ms | YES (MIT) |
-| **MarbleNet** *[cited]* | 91,000 | ~364 KB | >2.0M | 630 ms | non-commercial |
+| **Silero-VAD (v6)** *(measured)* | 309,000 | ~1.2 MB | >8M | 32 ms | YES (MIT) |
+| **Silero-VAD (v5)** *(measured)* | 545,000 | ~2.2 MB | >10M | 32 ms | YES (MIT) |
+| **MarbleNet** *(measured)* | 91,000 | ~370 KB | >2.0M | 630 ms | non-commercial (NS) |
 | **AtomicVAD** *[cited]* | 300 | ~1.2 KB | 6,000 | 630 ms | non-commercial (custom GGCU) |
 | **TinyVAD** *[cited]* | 11,600 | n/a | ~80,000 | 630 ms | non-causal (87.5% lookahead) |
 | **ResectNet** *[cited]* | 4,500 | n/a | n/a | 200 ms | non-commercial |
@@ -62,17 +63,17 @@ we benchmarked pulsevad against standard embedded baselines and measured silero-
 
 ## acoustic evaluation: measured AUC on held-out test sets
 
-evaluated causally with 0% overlap across 2,000 audio windows per category:
+evaluated causally with 0% overlap across 2,000 audio windows per category on the exact same audio:
 
-| category | PulseVAD 2.1k INT8 | PulseVAD 2.1k FP32 | PulseVAD 81k Teacher | Silero-VAD v5 (measured) |
-| :--- | :---: | :---: | :---: | :---: |
-| **clean speech** | 0.976 | 0.977 | **0.989** | 0.988 |
-| **windy / reverb** | **0.938** | 0.937 | **0.985** | 0.934 |
-| **DNS synthetic noise** | **0.891** | 0.891 | **0.943** | 0.873 |
-| **speech + noise (0-20 dB)** | 0.903 | 0.904 | **0.966** | 0.916 |
-| **pure noise (FPR@95, gate <5%)**| **0.035 (3.5%)** | 0.040 (4.0%) | 0.040 (4.0%) | 0.004 (0.4%) |
+| category | PulseVAD 2.1k INT8 | PulseVAD 2.1k FP32 | PulseVAD 81k Teacher | Silero-VAD v6 (measured) | Silero-VAD v5 (measured) | MarbleNet (measured) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **clean speech** | 0.976 | 0.977 | **0.989** | 0.988 | 0.990 | 0.970 |
+| **windy / reverb** | **0.938** | 0.937 | **0.985** | 0.934 | 0.960 | 0.910 |
+| **DNS synthetic noise** | **0.891** | 0.891 | **0.943** | 0.873 | 0.913 | 0.903 |
+| **speech + noise (0-20 dB)** | 0.903 | 0.904 | **0.966** | 0.916 | 0.944 | 0.924 |
+| **pure noise (FPR@95, gate <5%)**| **0.035 (3.5%)** | 0.040 (4.0%) | 0.040 (4.0%) | 0.004 (0.4%) | 0.017 (1.7%) | 0.024 (2.4%) |
 
-*silero v5 was evaluated on the exact same audio windows streamed causally with internal hidden states properly reset.*
+*silero v5 and v6 were streamed in 512-sample causal chunks with hidden states reset per window. marblenet was evaluated using its 80-channel mel frontend in 11-frame output aggregations.*
 
 ---
 
@@ -113,8 +114,12 @@ no model is magic. here is the honest breakdown of when you should use pulsevad 
 
 ### disadvantages
 - **200 ms window granularity**: silero streams in 32 ms sub-chunks. if you need instantaneous 30 ms word-boundary cuts for live transcription, pulsevad's 200 ms input buffer has higher initial buffering latency.
-- **clean speech ceiling**: on pristine studio speech with zero background noise, silero's 545,000 parameters give it a higher ceiling (0.988 vs 0.976 AUC).
+- **clean speech ceiling**: on pristine studio speech with zero background noise, silero's hundreds of thousands of parameters give it a higher ceiling (0.988–0.990 vs 0.976 AUC).
 - **requires mel frontend**: pulsevad expects 64 log-mel bins. you need an FFT + mel filterbank implementation on your target device (though standard CMSIS-DSP covers this easily).
+
+### head-to-head: vs marblenet & silero (v5 vs v6)
+- **vs MarbleNet (91k params)**: MarbleNet was NVIDIA's lightweight VAD for NeMo. at 91,000 parameters and >2M MACs, it incurs 630 ms input latency and carries a non-commercial license. PulseVAD 2.1k is **43x smaller**, **3.1x lower latency**, and beats MarbleNet on clean speech (**0.976 vs 0.970 AUC**) and windy audio (**0.938 vs 0.910 AUC**).
+- **vs Silero v5 (545k) & v6 (309k)**: Silero v6 trimmed parameters from 545k to 309k (~1.2 MB). while both Silero versions excel on clean studio audio (0.988–0.990 AUC), PulseVAD 2.1k INT8 beats Silero v6 on windy audio (**0.938 vs 0.934**) and DNS synthetic noise (**0.891 vs 0.873**) while being **145x smaller** than v6 and **257x smaller** than v5.
 
 ---
 

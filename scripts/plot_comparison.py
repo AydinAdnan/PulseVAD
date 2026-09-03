@@ -20,43 +20,44 @@ def main():
 
     models = [
         ("PulseVAD Teacher (81k)", ours["teacher_81k"], "#2563eb"),
-        ("PulseVAD Ship FP32 (2.1k)", ours["student_2.1k_fp32"], "#16a34a"),
         ("PulseVAD Ship INT8 (2.1k)", ours["student_2.1k_int8"], "#059669"),
-        ("Silero-VAD v5 (545k)", ours["Silero-VAD v5 (measured, same windows)"], "#dc2626"),
+        ("Silero-VAD v6 (measured)", ours["Silero-VAD v6 (measured, same windows)"], "#dc2626"),
+        ("Silero-VAD v5 (measured)", ours["Silero-VAD v5 (measured, same windows)"], "#ea580c"),
+        ("MarbleNet (91k, measured)", ours["MarbleNet (measured, same windows)"], "#7c3aed"),
     ]
 
     plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6), dpi=300)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), dpi=300)
 
     # 1. Measured AUC across 4 acoustic categories
     x = np.arange(len(categories))
-    width = 0.20
+    width = 0.16
     for idx, (mname, row, color) in enumerate(models):
         aucs = [row[c]["auc"] for c in categories]
-        rects = axes[0].bar(x + (idx - 1.5) * width, aucs, width, label=mname, color=color, alpha=0.9, edgecolor="black", linewidth=0.5)
+        rects = axes[0].bar(x + (idx - 2.0) * width, aucs, width, label=mname, color=color, alpha=0.9, edgecolor="black", linewidth=0.5)
         for r in rects:
             h = r.get_height()
             axes[0].annotate(f"{h:.3f}",
                              xy=(r.get_x() + r.get_width() / 2, h),
                              xytext=(0, 3), textcoords="offset points",
-                             ha='center', va='bottom', fontsize=7.5, rotation=45)
+                             ha='center', va='bottom', fontsize=6.8, rotation=45)
 
     axes[0].set_ylabel("AUC-ROC (Higher is Better)", fontsize=11, fontweight="bold")
     axes[0].set_title("Measured AUC Across Held-Out Categories\n(Exact Same 200 ms Windows, Causal)", fontsize=12, fontweight="bold")
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(cat_names, fontsize=10, fontweight="bold")
     axes[0].set_ylim(0.75, 1.03)
-    axes[0].legend(loc="lower left", fontsize=9, framealpha=0.9)
+    axes[0].legend(loc="lower left", fontsize=8.5, framealpha=0.9)
     axes[0].grid(True, linestyle="--", alpha=0.6)
 
     # 2. Pareto Frontier: Model Size (Params, Log Scale) vs Clean & Windy AUC
     pareto_models = [
         ("PulseVAD 2.1k INT8", 2118, 0.976, 0.938, "#059669", "*", 220),
-        ("PulseVAD 2.1k FP32", 2118, 0.977, 0.937, "#16a34a", "o", 100),
         ("PulseVAD 81k Teacher", 81090, 0.989, 0.985, "#2563eb", "s", 110),
-        ("Silero-VAD v5 (measured)", 545000, 0.988, 0.934, "#dc2626", "^", 120),
-        ("MarbleNet (cited)", 91000, 0.960, 0.850, "#9333ea", "d", 90),
-        ("TinyVAD (cited, non-causal)", 11600, 0.950, 0.864, "#d97706", "v", 80),
+        ("Silero-VAD v6 (measured)", 309000, 0.988, 0.934, "#dc2626", "^", 120),
+        ("Silero-VAD v5 (measured)", 545000, 0.990, 0.960, "#ea580c", "v", 110),
+        ("MarbleNet (measured)", 91000, 0.970, 0.910, "#7c3aed", "d", 110),
+        ("TinyVAD (cited, non-causal)", 11600, 0.950, 0.864, "#d97706", "x", 80),
         ("ResectNet (cited)", 4500, 0.940, 0.886, "#0891b2", "p", 80),
         ("AtomicVAD (cited)", 300, 0.920, 0.869, "#4b5563", "X", 80),
     ]
