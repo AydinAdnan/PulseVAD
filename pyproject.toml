@@ -1,6 +1,6 @@
 [project]
 name = "pulsevad"
-version = "0.1.1"
+version = "0.1.2"
 description = "Ultra-tiny 2.1k streaming voice activity detector for edge devices and microcontrollers"
 readme = "README.md"
 license = "MIT"
