@@ -10,7 +10,7 @@ from pulsevad.utils_vad import (
     get_model_path,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "PulseVAD",

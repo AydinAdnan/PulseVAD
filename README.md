@@ -35,6 +35,126 @@ To run or reproduce the training, pruning, and cloud evaluation pipeline on Moda
 
 ---
 
+## Model variants & usage guide
+
+PulseVAD ships multiple pre-trained model flavors depending on your target hardware, runtime, and accuracy requirements:
+
+| Model file | Params | Format | Size | Best used for |
+|---|---|---|---|---|
+| `pulsevad_2.1k_int8.onnx` *(default)* | 2,118 | ONNX (INT8 QDQ) | 26 KB | Edge devices, Raspberry Pi, mobile, fast CPU inference |
+| `pulsevad_2.1k.onnx` | 2,118 | ONNX (FP32) | 12 KB | Standard ONNX runtimes requiring float32 |
+| `pulsevad_2.1k.jit` | 2,118 | TorchScript JIT | 38 KB | Pure PyTorch workflows (zero `onnxruntime` dependency) |
+| `pulsevad_2.1k.pth` | 2,118 | PyTorch State Dict | 16 KB | Fine-tuning, research, or custom PyTorch integrations |
+| `pulsevad_weights.h` | 2,118 | Standalone C Header | 10 KB | Microcontrollers (ARM Cortex-M, ESP32, STM32, Arduino) |
+| `pulsevad_teacher_81k.onnx` | 81,090 | ONNX (FP32) | 325 KB | Maximum accuracy baseline (server / desktop) |
+| `pulsevad_teacher_81k.pth` | 81,090 | PyTorch State Dict | 352 KB | Unpruned 81k teacher weights |
+
+---
+
+### Usage 1: ONNX Runtime (Recommended, default)
+
+Fast, lightweight CPU inference with zero heavy PyTorch dependencies:
+
+```python
+from pulsevad import load_pulsevad, read_audio, predict_window, get_speech_timestamps
+
+# Default: 2.1k INT8 quantized model (2.1 KB weight payload)
+model = load_pulsevad(onnx=True, quantized=True)
+
+# Or load the 2.1k FP32 model:
+model_fp32 = load_pulsevad(onnx=True, quantized=False)
+
+# Or load the high-capacity 81k teacher model:
+model_81k = load_pulsevad(onnx=True, model_type="81k")
+```
+
+### Usage 2: PyTorch / TorchScript (No ONNX Runtime needed)
+
+If your application already uses PyTorch, load the model directly as a TorchScript JIT module:
+
+```python
+import torch
+from pulsevad import load_pulsevad, read_audio, predict_window
+
+# Loads pulsevad_2.1k.jit into PyTorch
+model = load_pulsevad(onnx=False, device="cpu")  # or device="cuda"
+
+wav = read_audio("speech.wav")
+chunk = wav[:3200]  # 200 ms @ 16 kHz
+prob = predict_window(model, chunk)
+print(f"Speech probability: {prob:.4f}")
+```
+
+### Usage 3: Real-time streaming (Causal 200 ms window)
+
+For live microphone feeds or streaming audio pipelines (16 kHz mono):
+
+```python
+import numpy as np
+from pulsevad import load_pulsevad, predict_window
+
+model = load_pulsevad()
+
+# Buffer 3,200 audio samples (200 ms @ 16,000 Hz)
+audio_buffer = np.zeros(3200, dtype=np.float32)
+
+def on_audio_chunk(new_samples_200ms):
+    # Predict speech probability [0.0 - 1.0]
+    prob = predict_window(model, new_samples_200ms)
+    is_speech = prob > 0.5
+    return is_speech
+```
+
+### Usage 4: Speech timestamps across long audio files
+
+Scan continuous audio and return timestamps for active speech intervals:
+
+```python
+from pulsevad import load_pulsevad, read_audio, get_speech_timestamps
+
+model = load_pulsevad()
+wav = read_audio("recording.wav", sampling_rate=16000)
+
+timestamps = get_speech_timestamps(
+    wav,
+    model,
+    threshold=0.5,
+    min_speech_duration_ms=100,
+    min_silence_duration_ms=150,
+)
+
+for seg in timestamps:
+    start_sec = seg["start"] / 16000
+    end_sec = seg["end"] / 16000
+    print(f"Speech: {start_sec:.2f}s -> {end_sec:.2f}s (duration: {end_sec - start_sec:.2f}s)")
+```
+
+### Usage 5: Embedded C / Microcontrollers (`pulsevad_weights.h`)
+
+For microcontrollers with constrained SRAM (ARM Cortex-M0+, M4, M7, ESP32, STM32), PulseVAD ships with a zero-dependency C header containing pre-quantized `int8_t` weight arrays, bias vectors, and layer quantization scale constants:
+
+```python
+from pulsevad import get_model_path
+
+# Get absolute path to the bundled C header
+c_header_path = get_model_path("pulsevad_weights.h")
+print(f"C header is located at: {c_header_path}")
+```
+
+In your firmware project:
+```c
+#include "pulsevad_weights.h"
+
+// pulsevad_weights.h provides:
+// - conv1d_adapter_weight[12][64][1]
+// - dw_conv0_weight[12][1][11]
+// - pw_conv0_weight[8][12][1]
+// - block1, block2, block3 weight tensors
+// - int32_t layer biases and float scale multipliers
+```
+
+---
+
 ## What this actually is
 
 If you've ever tried running a modern deep learning voice activity detector on a real embedded target (think an ARM Cortex-M0+ or M4 with 32 KB of RAM), you know the options suck. Silero is fantastic for servers and desktop apps, but it weighs 545,000 parameters (~2.2 MB) and demands millions of MACs per inference. Other tiny models in academic papers either rely on non-causal lookahead (cheating by looking 600 ms into the future), require exotic activation functions that don't exist in CMSIS-NN, or use non-commercial research licenses.

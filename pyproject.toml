@@ -1,7 +1,12 @@
 [project]
 name = "pulsevad"
-version = "0.1.0"
-description = "Ultra-tiny streaming VAD (kiloVAD clean-room reimplementation)"
+version = "0.1.1"
+description = "Ultra-tiny 2.1k streaming voice activity detector for edge devices and microcontrollers"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Aydin Adnan" },
+]
 requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.8.0",
@@ -19,14 +24,21 @@ dependencies = [
     "tqdm>=4.66.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/AydinAdnan/PulseVAD"
+Repository = "https://github.com/AydinAdnan/PulseVAD"
+Issues = "https://github.com/AydinAdnan/PulseVAD/issues"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pulsevad"]
+artifacts = ["pulsevad/data/*"]
 
 [dependency-groups]
 dev = [
     "pytest>=7.4.0",
 ]
+
