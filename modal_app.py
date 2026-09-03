@@ -518,8 +518,18 @@ def eval_competitors(seed: int = 123):
     volume.reload()
     eval_dir = Path(DATA_ROOT) / "cache" / "eval_sets"
     cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
+
+    # If running concurrently with cache_eval_audio, wait for audio arrays to land
+    import time
+    for _ in range(60):
+        if (eval_dir / "eval_clean_audio.npy").exists():
+            break
+        print("[silero] waiting for eval audio files from cache_eval_audio...", flush=True)
+        time.sleep(5)
+        volume.reload()
+
     model = load_silero_vad()
-    report = {"Silero-VAD v5 (measured, same windows)": {}}
+    silero_results = {}
     for cat in cats:
         audio = np.load(eval_dir / f"eval_{cat}_audio.npy")  # (N, 3200) float32
         labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
@@ -530,13 +540,20 @@ def eval_competitors(seed: int = 123):
                 # window score = mean over its 6 causal sub-chunks only.
                 chunks = torch.from_numpy(win[: len(win) // 512 * 512]).reshape(-1, 512)
                 probs[i] = model(chunks).mean().item()
-        report["Silero-VAD v5 (measured, same windows)"][cat] = causal_metrics(labels, probs)
-        print(f"[silero:{cat}] {report['Silero-VAD v5 (measured, same windows)'][cat]}",
-              flush=True)
-    (Path(DATA_ROOT) / "runs" / f"pruned_seed_0" / "competitor_report.json").write_text(
-        json.dumps(report, indent=2))
+        silero_results[cat] = causal_metrics(labels, probs)
+        print(f"[silero:{cat}] {silero_results[cat]}", flush=True)
+
+    out_file = Path(DATA_ROOT) / "runs" / "pruned_seed_0" / "competitor_report.json"
+    full_report = {}
+    if out_file.exists():
+        try:
+            full_report = json.loads(out_file.read_text())
+        except Exception:
+            pass
+    full_report["Silero-VAD v5 (measured, same windows)"] = silero_results
+    out_file.write_text(json.dumps(full_report, indent=2))
     volume.commit()
-    return report
+    return full_report
 
 
 # Heavy, isolated image: NVIDIA NeMo for the MarbleNet checkpoint.
@@ -583,7 +600,17 @@ def eval_marblenet():
         return report
 
     cats = ["clean", "windy", "dns_synthetic", "speech_noise", "pure_noise"]
-    report["MarbleNet (measured, same windows)"] = {}
+
+    # If running concurrently with cache_eval_audio, wait for audio arrays to land
+    import time
+    for _ in range(60):
+        if (eval_dir / "eval_clean_audio.npy").exists():
+            break
+        print("[marblenet] waiting for eval audio files from cache_eval_audio...", flush=True)
+        time.sleep(5)
+        volume.reload()
+
+    marblenet_results = {}
     for cat in cats:
         audio = np.load(eval_dir / f"eval_{cat}_audio.npy")
         labels = np.load(eval_dir / f"eval_{cat}_labels.npy")
@@ -593,9 +620,10 @@ def eval_marblenet():
                 sig = torch.from_numpy(win[None, :])  # (1, 3200) 16 kHz
                 logits = mnet.forward(input_signal=sig, length=torch.tensor([3200]))
                 probs[i] = torch.sigmoid(logits).mean().item()
-        report["MarbleNet (measured, same windows)"][cat] = causal_metrics(labels, probs)
-        print(f"[marblenet:{cat}] {report['MarbleNet (measured, same windows)'][cat]}",
+        marblenet_results[cat] = causal_metrics(labels, probs)
+        print(f"[marblenet:{cat}] {marblenet_results[cat]}",
               flush=True)
+    report["MarbleNet (measured, same windows)"] = marblenet_results
     out.write_text(json.dumps(report, indent=2))
     volume.commit()
     return report
