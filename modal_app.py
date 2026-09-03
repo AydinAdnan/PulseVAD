@@ -687,12 +687,11 @@ def eval_multilingual(seed: int = 42, windows_per_lang: int = 400):
     import torch
     from silero_vad import load_silero_vad
 
-    from torch.utils.data import DataLoader
-    from pulsevad.dataset import CachedWindows, NoiseReader, build_noise_pool
+    from pulsevad.build_cache import NoiseReader, build_noise_pool
     from pulsevad.eval import causal_metrics
     from pulsevad.frontend import MelFrontend
     from pulsevad.model import PulseVAD
-    from pulsevad.prune import build_student, calibrate_classifier_bias
+    from pulsevad.prune import build_student
     from pulsevad.quantize import (
         Int8PulseVAD, fake_quant_weights,
         fold_batchnorm, weight_scales,
@@ -719,12 +718,20 @@ def eval_multilingual(seed: int = 42, windows_per_lang: int = 400):
     folded.eval()
 
     int8_model = Int8PulseVAD(folded.dims)
-    int8_model.load_state_dict(folded.state_dict())
-    cache = Path(DATA_ROOT) / "cache"
-    train_ds = CachedWindows(cache / "train_features.npy", cache / "train_labels.npy")
-    loader = DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=2)
-    int8_model.calibrate([x for _, (x, _) in zip(range(64), loader)])
-    fake_quant_weights(int8_model, weight_scales(int8_model))
+    int8_ck_path = out_dir / "pulsevad_2.1k_int8.pth"
+    if int8_ck_path.exists():
+        int8_ck = torch.load(int8_ck_path, map_location="cpu", weights_only=False)
+        int8_model.load_state_dict(int8_ck["model"])
+        int8_model.scales = int8_ck["scales"]
+    else:
+        from pulsevad.train import CachedWindows
+        from torch.utils.data import DataLoader
+        int8_model.load_state_dict(folded.state_dict())
+        cache = Path(DATA_ROOT) / "cache"
+        train_ds = CachedWindows(cache / "train_features.npy", cache / "train_labels.npy")
+        loader = DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=2)
+        int8_model.calibrate([x for _, (x, _) in zip(range(64), loader)])
+        fake_quant_weights(int8_model, weight_scales(int8_model))
     int8_model.eval()
 
     silero_model = load_silero_vad()
