@@ -667,3 +667,198 @@ def build_comparison(seed: int = 0):
     (out_dir / "comparison.json").write_text(json.dumps(data, indent=2))
     volume.commit()
     print(md, flush=True)
+
+
+@app.function(image=vad_image, volumes={DATA_ROOT: volume}, timeout=3 * 3600, cpu=4)
+def eval_multilingual(seed: int = 42, windows_per_lang: int = 400):
+    """Benchmark PulseVAD (81k Teacher, 2.1k FP32, 2.1k INT8) vs Silero-VAD v5
+    across 6 diverse languages from Google FLEURS (English, Spanish, French,
+    German, Mandarin Chinese, Japanese) under clean and noisy (MUSAN) conditions.
+
+    uv run modal run modal_app.py::eval_multilingual
+    """
+    import io
+    import json
+    import tarfile
+    import urllib.request
+    from pathlib import Path
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from silero_vad import load_silero_vad
+
+    from torch.utils.data import DataLoader
+    from pulsevad.dataset import CachedWindows, NoiseReader, build_noise_pool
+    from pulsevad.eval import causal_metrics
+    from pulsevad.frontend import MelFrontend
+    from pulsevad.model import PulseVAD
+    from pulsevad.prune import build_student, calibrate_classifier_bias
+    from pulsevad.quantize import (
+        Int8PulseVAD, fake_quant_weights,
+        fold_batchnorm, weight_scales,
+    )
+
+    volume.reload()
+    rng = np.random.default_rng(seed)
+
+    # 1. Load trained models
+    out_dir = Path(DATA_ROOT) / "runs" / "pruned_seed_0"
+    tck = torch.load(Path(DATA_ROOT) / "runs" / "seed_0" / "best_model.pth",
+                     map_location="cpu", weights_only=False)
+    teacher = PulseVAD()
+    teacher.load_state_dict(tck["model"])
+    teacher.eval()
+
+    ck = torch.load(out_dir / "pruned_model_2.1k.pth",
+                    map_location="cpu", weights_only=False)
+    student = build_student()
+    student.load_state_dict(ck["model"])
+    student.eval()
+
+    folded = fold_batchnorm(student)
+    folded.eval()
+
+    int8_model = Int8PulseVAD(folded.dims)
+    int8_model.load_state_dict(folded.state_dict())
+    cache = Path(DATA_ROOT) / "cache"
+    train_ds = CachedWindows(cache / "train_features.npy", cache / "train_labels.npy")
+    loader = DataLoader(train_ds, batch_size=512, shuffle=True, num_workers=2)
+    int8_model.calibrate([x for _, (x, _) in zip(range(64), loader)])
+    fake_quant_weights(int8_model, weight_scales(int8_model))
+    int8_model.eval()
+
+    silero_model = load_silero_vad()
+
+    models = {
+        "PulseVAD Teacher (81k)": teacher,
+        "PulseVAD Ship FP32 (2.1k)": folded,
+        "PulseVAD Ship INT8 (2.1k)": int8_model,
+        "Silero-VAD v5 (545k)": silero_model,
+    }
+
+    # 2. Noise pool for realistic background augmentation
+    noise_pool = build_noise_pool([Path(DATA_ROOT) / "raw" / "musan" / "noise"])
+    noise_reader = NoiseReader(noise_pool)
+    frontend = MelFrontend()
+
+    languages = {
+        "en_us": "English (US)",
+        "es_419": "Spanish (LatAm)",
+        "fr_fr": "French",
+        "de_de": "German",
+        "cmn_hans_cn": "Mandarin Chinese",
+        "ja_jp": "Japanese",
+        "hi_in": "Hindi (India)",
+        "ta_in": "Tamil (India)",
+        "te_in": "Telugu (India)",
+        "bn_in": "Bengali (India)",
+    }
+
+    report = {}
+    print(f"[multilingual] Starting benchmark across {len(languages)} languages...", flush=True)
+
+    for lang_code, lang_name in languages.items():
+        print(f"[multilingual:{lang_code}] Fetching FLEURS audio for {lang_name}...", flush=True)
+        url = f"https://huggingface.co/datasets/google/fleurs/resolve/main/data/{lang_code}/audio/test.tar.gz"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        resp = urllib.request.urlopen(req)
+        tf = tarfile.open(fileobj=io.BytesIO(resp.read()))
+
+        speech_wavs = []
+        for member in tf:
+            if member.name.endswith(".wav"):
+                f = tf.extractfile(member)
+                if f is not None:
+                    data, sr = sf.read(f)
+                    if len(data) >= 3200:
+                        speech_wavs.append(data.astype(np.float32))
+                if len(speech_wavs) >= 30:
+                    break
+
+        # Generate windows: 60% speech (half noisy), 40% pure noise
+        windows = []
+        labels = []
+        n_speech = int(windows_per_lang * 0.6)
+        n_noise = windows_per_lang - n_speech
+
+        # Speech windows
+        for _ in range(n_speech):
+            w = speech_wavs[rng.integers(len(speech_wavs))]
+            idx = rng.integers(0, len(w) - 3200 + 1)
+            win = w[idx : idx + 3200].copy()
+            # 50% chance of adding noise
+            if rng.random() < 0.5:
+                nwin = noise_reader.load_window(rng)
+                snr_db = rng.uniform(0.0, 20.0)
+                spk_pwr = np.mean(win**2) + 1e-9
+                noi_pwr = np.mean(nwin**2) + 1e-9
+                scale = np.sqrt(spk_pwr / (noi_pwr * (10 ** (snr_db / 10.0))))
+                win = win + scale * nwin
+            windows.append(win.astype(np.float32))
+            labels.append(1)
+
+        # Pure noise windows (label 0)
+        for _ in range(n_noise):
+            nwin = noise_reader.load_window(rng)
+            windows.append(nwin.astype(np.float32))
+            labels.append(0)
+
+        # Shuffle windows
+        perm = rng.permutation(len(windows))
+        windows = [windows[i] for i in perm]
+        labels = np.array([labels[i] for i in perm], dtype=np.uint8)
+
+        # Featurize for PulseVAD
+        feats = frontend(torch.from_numpy(np.stack(windows)))  # (N, 64, 21)
+
+        lang_metrics = {}
+        # Evaluate PulseVAD models
+        with torch.no_grad():
+            for mname in ["PulseVAD Teacher (81k)", "PulseVAD Ship FP32 (2.1k)", "PulseVAD Ship INT8 (2.1k)"]:
+                m = models[mname]
+                p = m(feats, return_logits=False).cpu().numpy().squeeze()
+                lang_metrics[mname] = causal_metrics(labels, p)
+
+            # Evaluate Silero-VAD v5
+            silero = models["Silero-VAD v5 (545k)"]
+            silero_probs = np.empty(len(windows), dtype=np.float32)
+            for i, win in enumerate(windows):
+                silero.reset_states()
+                sub = []
+                for k in range(0, 3200 - 512 + 1, 512):
+                    c = torch.from_numpy(win[k : k + 512]).unsqueeze(0)
+                    sub.append(silero(c, 16000).item())
+                silero_probs[i] = float(np.mean(sub))
+            lang_metrics["Silero-VAD v5 (545k)"] = causal_metrics(labels, silero_probs)
+
+        report[lang_name] = lang_metrics
+        print(f"[multilingual:{lang_code}] Completed {lang_name}:", flush=True)
+        for mn, res in lang_metrics.items():
+            print(f"  {mn}: AUC {res['auc']:.4f}, F1 {res['f1']:.4f}, FPR@95 {res['fpr_at_tpr95']:.4f}", flush=True)
+
+    # Markdown table
+    header = "| Language | PulseVAD 2.1k INT8 | PulseVAD 2.1k FP32 | PulseVAD 81k Teacher | Silero-VAD v5 (545k) |"
+    sep = "|---|---|---|---|---|"
+    rows = []
+    for lang_name, results in report.items():
+        i8 = f"{results['PulseVAD Ship INT8 (2.1k)']['auc']:.3f}"
+        f32 = f"{results['PulseVAD Ship FP32 (2.1k)']['auc']:.3f}"
+        tea = f"{results['PulseVAD Teacher (81k)']['auc']:.3f}"
+        sil = f"{results['Silero-VAD v5 (545k)']['auc']:.3f}"
+        rows.append(f"| **{lang_name}** | **{i8}** | {f32} | {tea} | {sil} |")
+
+    # Add macro average row
+    avg_i8 = np.mean([r['PulseVAD Ship INT8 (2.1k)']['auc'] for r in report.values()])
+    avg_f32 = np.mean([r['PulseVAD Ship FP32 (2.1k)']['auc'] for r in report.values()])
+    avg_tea = np.mean([r['PulseVAD Teacher (81k)']['auc'] for r in report.values()])
+    avg_sil = np.mean([r['Silero-VAD v5 (545k)']['auc'] for r in report.values()])
+    rows.append(f"| **Macro Average** | **{avg_i8:.3f}** | **{avg_f32:.3f}** | **{avg_tea:.3f}** | **{avg_sil:.3f}** |")
+
+    table_md = "\n".join([header, sep] + rows)
+    print("\n## Multilingual Benchmark Results (FLEURS + Noise)\n", flush=True)
+    print(table_md, flush=True)
+
+    out_file = out_dir / "multilingual_report.json"
+    out_file.write_text(json.dumps({"report": report, "table_md": table_md}, indent=2))
+    volume.commit()
+    return report
