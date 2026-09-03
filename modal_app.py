@@ -538,8 +538,12 @@ def eval_competitors(seed: int = 123):
             for i, win in enumerate(audio):
                 # Silero v5 streams in 512-sample (32 ms) chunks; a 200 ms
                 # window score = mean over its 6 causal sub-chunks only.
-                chunks = torch.from_numpy(win[: len(win) // 512 * 512]).reshape(-1, 512)
-                probs[i] = model(chunks).mean().item()
+                model.reset_states()
+                sub_probs = []
+                for k in range(0, 3200 - 512 + 1, 512):
+                    chunk = torch.from_numpy(win[k : k + 512]).unsqueeze(0)
+                    sub_probs.append(model(chunk, 16000).item())
+                probs[i] = float(np.mean(sub_probs))
         silero_results[cat] = causal_metrics(labels, probs)
         print(f"[silero:{cat}] {silero_results[cat]}", flush=True)
 
