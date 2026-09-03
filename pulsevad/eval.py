@@ -14,8 +14,6 @@ import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score, roc_curve
 
-from pulsevad.frontend import MelFrontend
-
 THRESHOLDS = np.linspace(0.0, 1.0, 201)  # spec 7.1 step 5: 0.0..1.0 sweep
 
 
@@ -83,6 +81,7 @@ def evaluate_causal_clip(model, audio, sr: int = 16000, hop_samples: int = 3200)
     if sr != 16000:
         g = np.gcd(sr, 16000)
         audio = sps.resample_poly(audio, 16000 // g, sr // g)
+    from pulsevad.frontend import MelFrontend
     frontend = MelFrontend()
     device = next(model.parameters()).device
     n_hops = len(audio) // hop_samples

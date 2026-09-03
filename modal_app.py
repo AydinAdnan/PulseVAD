@@ -576,19 +576,20 @@ def eval_marblenet():
 
     uv run modal run modal_app.py::eval_marblenet
     """
-    import numpy as np
-    import torch
-
-    from pulsevad.eval import causal_metrics
-
     volume.reload()
     eval_dir = Path(DATA_ROOT) / "cache" / "eval_sets"
     out = Path(DATA_ROOT) / "runs" / "pruned_seed_0" / "competitor_report.json"
     report = {}
     if out.exists():
-        report = json.loads(out.read_text())
+        try:
+            report = json.loads(out.read_text())
+        except Exception:
+            pass
 
     try:
+        import numpy as np
+        import torch
+        from pulsevad.eval import causal_metrics
         from nemo.collections.asr.models import EncDecClassificationModel
         mnet = EncDecClassificationModel.from_pretrained("vad_marblenet")
         mnet.eval()
