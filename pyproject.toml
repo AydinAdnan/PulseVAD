@@ -1,6 +1,6 @@
 [project]
 name = "pulsevad"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ultra-tiny 2.1k streaming voice activity detector for edge devices and microcontrollers"
 readme = "README.md"
 license = "MIT"
@@ -9,19 +9,30 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "matplotlib>=3.8.0",
-    "modal>=1.5.5",
-    "numpy>=1.24.0,<2.0.0",
-    "onnx>=1.15.0",
+    "numpy>=1.24.0",
     "onnxruntime>=1.16.0",
-    "pyroomacoustics>=0.7.5",
-    "scikit-learn>=1.3.0",
     "scipy>=1.11.0",
     "soundfile>=0.12.1",
+]
+
+[project.optional-dependencies]
+torch = [
+    "torch>=2.1.0",
+    "torchaudio>=2.1.0",
+]
+train = [
+    "matplotlib>=3.8.0",
+    "modal>=1.5.5",
+    "onnx>=1.15.0",
+    "pyroomacoustics>=0.7.5",
+    "scikit-learn>=1.3.0",
     "torch>=2.1.0",
     "torch-pruning>=1.4.0",
     "torchaudio>=2.1.0",
     "tqdm>=4.66.0",
+]
+all = [
+    "pulsevad[torch,train]",
 ]
 
 [project.urls]
@@ -40,5 +51,15 @@ artifacts = ["pulsevad/data/*"]
 [dependency-groups]
 dev = [
     "pytest>=7.4.0",
+    "torch>=2.1.0",
+    "torchaudio>=2.1.0",
+    "torch-pruning>=1.4.0",
+    "scikit-learn>=1.3.0",
+    "pyroomacoustics>=0.7.5",
+    "matplotlib>=3.8.0",
+    "modal>=1.5.5",
+    "onnx>=1.15.0",
+    "tqdm>=4.66.0",
 ]
+
 

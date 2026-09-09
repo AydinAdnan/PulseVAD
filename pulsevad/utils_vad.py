@@ -43,7 +43,13 @@ def load_pulsevad(
             providers = ["CPUExecutionProvider"] if device == "cpu" else ["CUDAExecutionProvider", "CPUExecutionProvider"]
             return ort.InferenceSession(str(get_model_path(fname)), providers=providers)
         else:
-            import torch
+            try:
+                import torch
+            except ImportError:
+                raise ImportError(
+                    "PyTorch is required to run TorchScript JIT models. "
+                    "Install with: pip install 'pulsevad[torch]'"
+                )
             m = torch.jit.load(str(get_model_path("pulsevad_2.1k.jit")), map_location=device)
             m.eval()
             return m
@@ -53,7 +59,13 @@ def load_pulsevad(
             providers = ["CPUExecutionProvider"] if device == "cpu" else ["CUDAExecutionProvider", "CPUExecutionProvider"]
             return ort.InferenceSession(str(get_model_path("pulsevad_teacher_81k.onnx")), providers=providers)
         else:
-            import torch
+            try:
+                import torch
+            except ImportError:
+                raise ImportError(
+                    "PyTorch is required to run PyTorch teacher models. "
+                    "Install with: pip install 'pulsevad[torch]'"
+                )
             from pulsevad.model import PulseVAD
             ck = torch.load(get_model_path("pulsevad_teacher_81k.pth"), map_location=device, weights_only=False)
             m = PulseVAD()
@@ -82,15 +94,10 @@ def read_audio(path: Union[str, Path], sampling_rate: int = 16000) -> np.ndarray
 def _extract_log_mel(audio_window: np.ndarray) -> np.ndarray:
     """Compute 64-channel log-mel features for a 3,200 sample (200 ms) window.
     Strictly causal: pre-emphasis -> waveform norm -> 64-mel -> per-bin norm.
+    Uses pure NumPy (zero PyTorch dependency).
     """
-    import torch
-    from pulsevad.frontend import MelFrontend
-
-    frontend = MelFrontend()
-    x = torch.from_numpy(audio_window).unsqueeze(0).float()
-    with torch.no_grad():
-        feats = frontend(x)
-    return feats.numpy().astype(np.float32)
+    from pulsevad.frontend_np import extract_log_mel_np
+    return extract_log_mel_np(audio_window)
 
 
 def predict_window(model, audio_window: np.ndarray) -> float:
@@ -107,11 +114,17 @@ def predict_window(model, audio_window: np.ndarray) -> float:
         raise ValueError(f"Audio window must be exactly 3,200 samples (200 ms @ 16 kHz), got {len(audio_window)}")
 
     feats = _extract_log_mel(audio_window)  # (1, 64, 21)
-    if hasattr(model, "run"):  # ONNX Runtime
+    if hasattr(model, "run"):  # ONNX Runtime (zero PyTorch dependency)
         input_name = model.get_inputs()[0].name
         logits = model.run(None, {input_name: feats})[0]
     else:  # PyTorch / TorchScript
-        import torch
+        try:
+            import torch
+        except ImportError:
+            raise ImportError(
+                "PyTorch is required to run TorchScript JIT models. "
+                "Install with: pip install 'pulsevad[torch]'"
+            )
         with torch.no_grad():
             out = model(torch.from_numpy(feats))
             logits = out.numpy() if hasattr(out, "numpy") else np.asarray(out)
